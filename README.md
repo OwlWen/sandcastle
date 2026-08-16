@@ -120,7 +120,7 @@ import { run, interactive, antigravity, agy } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 
-// Run an AFK task in a Docker sandbox using Antigravity:
+// Run an AFK task in a Docker sandbox provider using Antigravity:
 await run({
   agent: antigravity("gemini-2.5-pro", {
     effort: "high",
