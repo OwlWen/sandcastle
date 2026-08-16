@@ -9,7 +9,14 @@ import {
   type BindMountSandboxHandle,
   type InteractiveExecOptions,
 } from "./SandboxProvider.js";
-import { claudeCode, pi, codex, opencode } from "./AgentProvider.js";
+import {
+  claudeCode,
+  pi,
+  codex,
+  opencode,
+  antigravity,
+  agy,
+} from "./AgentProvider.js";
 
 // --- buildInteractiveArgs prompt tests ---
 
@@ -74,6 +81,22 @@ describe("buildInteractiveArgs with prompts", () => {
     const args = provider.buildInteractiveArgs!(interactiveOpts(""));
     expect(args).not.toContain("--prompt");
     expect(args).not.toContain("-p");
+  });
+
+  it("antigravity passes prompt via -i flag", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!(interactiveOpts("fix the bug"));
+    expect(args[0]).toBe("agy");
+    const iIdx = args.indexOf("-i");
+    expect(iIdx).toBeGreaterThan(-1);
+    expect(args[iIdx + 1]).toBe("fix the bug");
+    expect(args).not.toContain("-p");
+  });
+
+  it("antigravity omits -i flag when prompt is empty", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!(interactiveOpts(""));
+    expect(args).not.toContain("-i");
   });
 });
 

@@ -13,6 +13,7 @@ import {
   opencode,
   pi,
 } from "./AgentProvider.js";
+import * as sandcastleIndex from "./index.js";
 import type { AgentCommandOptions } from "./AgentProvider.js";
 import type { BindMountSandboxHandle } from "./SandboxProvider.js";
 
@@ -2137,6 +2138,145 @@ describe("antigravity factory", () => {
     expect(provider1.buildPrintCommand(opts("test")).command).not.toContain(
       "model-b",
     );
+  });
+
+  // --- buildInteractiveArgs ---
+
+  it("buildInteractiveArgs includes agy binary, --model, and omits prompt flag when prompt is empty", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!({
+      prompt: "",
+      dangerouslySkipPermissions: false,
+    });
+    expect(args).toEqual(["agy", "--model", "gemini-2.5-pro"]);
+  });
+
+  it("buildInteractiveArgs seeds the prompt with -i, not positional or -p", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!(opts("fix the bug"));
+    expect(args[0]).toBe("agy");
+    expect(args).toContain("--model");
+    expect(args).toContain("gemini-2.5-pro");
+    expect(args).toContain("-i");
+    expect(args).not.toContain("-p");
+    // 确保 prompt 紧跟在 -i 标志之后
+    expect(args[args.indexOf("-i") + 1]).toBe("fix the bug");
+  });
+
+  it("buildInteractiveArgs includes --dangerously-skip-permissions when true", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!({
+      prompt: "test",
+      dangerouslySkipPermissions: true,
+    });
+    expect(args).toContain("--dangerously-skip-permissions");
+  });
+
+  it("buildInteractiveArgs omits --dangerously-skip-permissions when false", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!({
+      prompt: "test",
+      dangerouslySkipPermissions: false,
+    });
+    expect(args).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("buildInteractiveArgs includes --effort when effort option is provided", () => {
+    for (const effort of ["low", "medium", "high"] as const) {
+      const provider = antigravity("gemini-2.5-pro", { effort });
+      const args = provider.buildInteractiveArgs!(opts("test"));
+      expect(args).toContain("--effort");
+      expect(args[args.indexOf("--effort") + 1]).toBe(effort);
+    }
+  });
+
+  it("buildInteractiveArgs omits --effort when effort is not provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!(opts("test"));
+    expect(args).not.toContain("--effort");
+  });
+
+  it("buildInteractiveArgs includes --mode when mode option is provided", () => {
+    for (const mode of ["accept-edits", "plan"] as const) {
+      const provider = antigravity("gemini-2.5-pro", { mode });
+      const args = provider.buildInteractiveArgs!(opts("test"));
+      expect(args).toContain("--mode");
+      expect(args[args.indexOf("--mode") + 1]).toBe(mode);
+    }
+  });
+
+  it("buildInteractiveArgs omits --mode when mode is not provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!(opts("test"));
+    expect(args).not.toContain("--mode");
+  });
+
+  it("buildInteractiveArgs includes --agent when agent option is provided", () => {
+    const provider = antigravity("gemini-2.5-pro", { agent: "build" });
+    const args = provider.buildInteractiveArgs!(opts("test"));
+    expect(args).toContain("--agent");
+    expect(args[args.indexOf("--agent") + 1]).toBe("build");
+  });
+
+  it("buildInteractiveArgs omits --agent when agent is not provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!(opts("test"));
+    expect(args).not.toContain("--agent");
+  });
+
+  it("buildInteractiveArgs includes --conversation when resumeSession is provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!({
+      prompt: "test",
+      dangerouslySkipPermissions: true,
+      resumeSession: "session-12345",
+    });
+    expect(args).toContain("--conversation");
+    expect(args[args.indexOf("--conversation") + 1]).toBe("session-12345");
+  });
+
+  it("buildInteractiveArgs omits --conversation when resumeSession is not provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!(opts("test"));
+    expect(args).not.toContain("--conversation");
+  });
+
+  it("agy alias provider also provides identical buildInteractiveArgs", () => {
+    const provider = agy("gemini-2.5-pro", {
+      effort: "high",
+      mode: "accept-edits",
+      agent: "review",
+    });
+    const args = provider.buildInteractiveArgs!({
+      prompt: "run review",
+      dangerouslySkipPermissions: true,
+      resumeSession: "conv-abc",
+    });
+    expect(args).toEqual([
+      "agy",
+      "--model",
+      "gemini-2.5-pro",
+      "--dangerously-skip-permissions",
+      "--effort",
+      "high",
+      "--mode",
+      "accept-edits",
+      "--agent",
+      "review",
+      "--conversation",
+      "conv-abc",
+      "-i",
+      "run review",
+    ]);
+  });
+
+  // --- top-level exports ---
+
+  it("exports antigravity and agy from top-level src/index.ts", () => {
+    expect(sandcastleIndex.antigravity).toBeDefined();
+    expect(sandcastleIndex.antigravity).toBe(antigravity);
+    expect(sandcastleIndex.agy).toBeDefined();
+    expect(sandcastleIndex.agy).toBe(agy);
   });
 
   it("parseStreamLine returns empty array for non-JSON lines", () => {

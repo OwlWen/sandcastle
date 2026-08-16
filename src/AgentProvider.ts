@@ -1498,6 +1498,34 @@ export const antigravity = (
     };
   },
 
+  buildInteractiveArgs({
+    prompt,
+    dangerouslySkipPermissions,
+    resumeSession,
+  }: AgentCommandOptions): string[] {
+    const args = ["agy", "--model", model];
+    if (dangerouslySkipPermissions) {
+      args.push("--dangerously-skip-permissions");
+    }
+    if (options?.effort) {
+      args.push("--effort", options.effort);
+    }
+    if (options?.mode) {
+      args.push("--mode", options.mode);
+    }
+    if (options?.agent) {
+      args.push("--agent", options.agent);
+    }
+    if (resumeSession) {
+      args.push("--conversation", resumeSession);
+    }
+    // 交互模式下通过 `-i`/`--prompt-interactive` 预填并自动执行提示词
+    if (prompt) {
+      args.push("-i", prompt);
+    }
+    return args;
+  },
+
   parseStreamLine(line: string): ParsedStreamEvent[] {
     return parseAgyStreamLine(line);
   },
