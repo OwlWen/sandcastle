@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   antigravity,
   agy,
+  parseAgyStreamLine,
   claudeCode,
   codex,
   copilot,
@@ -2136,6 +2137,483 @@ describe("antigravity factory", () => {
     expect(provider1.buildPrintCommand(opts("test")).command).not.toContain(
       "model-b",
     );
+  });
+
+  it("parseStreamLine returns empty array for non-JSON lines", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(provider.parseStreamLine("not json")).toEqual([]);
+    expect(provider.parseStreamLine("")).toEqual([]);
+    expect(provider.parseStreamLine("   ")).toEqual([]);
+  });
+
+  it("parseStreamLine returns empty array for malformed JSON", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(provider.parseStreamLine("{bad json")).toEqual([]);
+  });
+
+  it("parseStreamLine extracts session_id from init event with conversation_id", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "init",
+      conversation_id: "conv-12345",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "session_id", sessionId: "conv-12345" },
+    ]);
+  });
+
+  it("parseStreamLine extracts session_id from init event with session_id field", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "init",
+      session_id: "sess-abcde",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "session_id", sessionId: "sess-abcde" },
+    ]);
+  });
+
+  it("parseStreamLine returns empty array for init event without conversation_id", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "init",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([]);
+  });
+
+  it("parseAgyStreamLine can be called directly and behaves identically", () => {
+    const line = JSON.stringify({
+      event: "init",
+      conversation_id: "conv-direct",
+    });
+    expect(parseAgyStreamLine(line)).toEqual([
+      { type: "session_id", sessionId: "conv-direct" },
+    ]);
+  });
+
+  it("parseStreamLine extracts text delta from step_update agent_response event", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_type: "agent_response",
+        text_delta: "Hello Antigravity",
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "text", text: "Hello Antigravity" },
+    ]);
+  });
+
+  it("parseStreamLine extracts text delta from top-level agent_response event", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      step_type: "agent_response",
+      text_delta: "Streaming chunk",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "text", text: "Streaming chunk" },
+    ]);
+  });
+
+  it("parseStreamLine skips agent_response with non-string or missing text_delta", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line1 = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_type: "agent_response",
+      },
+    });
+    expect(provider.parseStreamLine(line1)).toEqual([]);
+
+    const line2 = JSON.stringify({
+      step_type: "agent_response",
+      text_delta: 123,
+    });
+    expect(provider.parseStreamLine(line2)).toEqual([]);
+  });
+
+  it("parseStreamLine extracts tool call for run_command with CommandLine arg", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_type: "tool",
+        tool_name: "run_command",
+        tool_info: {
+          parameters: {
+            CommandLine: "npm test",
+          },
+        },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "tool_call", name: "run_command", args: "npm test" },
+    ]);
+  });
+
+  it("parseStreamLine extracts tool call for view_file with AbsolutePath arg", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_type: "tool",
+        tool_name: "view_file",
+        parameters: {
+          AbsolutePath: "/workspace/src/AgentProvider.ts",
+        },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      {
+        type: "tool_call",
+        name: "view_file",
+        args: "/workspace/src/AgentProvider.ts",
+      },
+    ]);
+  });
+
+  it("parseStreamLine extracts tool call for replace_file_content and write_to_file with TargetFile arg", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const lineReplace = JSON.stringify({
+      step_type: "tool",
+      tool_name: "replace_file_content",
+      tool_info: {
+        parameters: {
+          TargetFile: "/workspace/src/file.ts",
+          Instruction: "fix bug",
+        },
+      },
+    });
+    expect(provider.parseStreamLine(lineReplace)).toEqual([
+      {
+        type: "tool_call",
+        name: "replace_file_content",
+        args: "/workspace/src/file.ts",
+      },
+    ]);
+
+    const lineWrite = JSON.stringify({
+      step_type: "tool",
+      tool_name: "write_to_file",
+      tool_info: {
+        parameters: {
+          TargetFile: "/workspace/src/new.ts",
+        },
+      },
+    });
+    expect(provider.parseStreamLine(lineWrite)).toEqual([
+      {
+        type: "tool_call",
+        name: "write_to_file",
+        args: "/workspace/src/new.ts",
+      },
+    ]);
+  });
+
+  it("parseStreamLine extracts tool call for search_web and grep_search", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const lineSearch = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_type: "tool",
+        tool_name: "search_web",
+        tool_info: {
+          parameters: {
+            query: "effect-ts documentation",
+          },
+        },
+      },
+    });
+    expect(provider.parseStreamLine(lineSearch)).toEqual([
+      {
+        type: "tool_call",
+        name: "search_web",
+        args: "effect-ts documentation",
+      },
+    ]);
+
+    const lineGrep = JSON.stringify({
+      step_type: "tool",
+      tool_name: "grep_search",
+      tool_info: {
+        parameters: {
+          Query: "parseAgyStreamLine",
+        },
+      },
+    });
+    expect(provider.parseStreamLine(lineGrep)).toEqual([
+      {
+        type: "tool_call",
+        name: "grep_search",
+        args: "parseAgyStreamLine",
+      },
+    ]);
+  });
+
+  it("parseStreamLine extracts tool call for read_url_content, list_dir, and send_message", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const lineUrl = JSON.stringify({
+      step_type: "tool",
+      tool_name: "read_url_content",
+      parameters: { Url: "https://example.com/docs" },
+    });
+    expect(provider.parseStreamLine(lineUrl)).toEqual([
+      {
+        type: "tool_call",
+        name: "read_url_content",
+        args: "https://example.com/docs",
+      },
+    ]);
+
+    const lineList = JSON.stringify({
+      step_type: "tool",
+      tool_name: "list_dir",
+      parameters: { DirectoryPath: "/workspace/src" },
+    });
+    expect(provider.parseStreamLine(lineList)).toEqual([
+      {
+        type: "tool_call",
+        name: "list_dir",
+        args: "/workspace/src",
+      },
+    ]);
+
+    const lineMsg = JSON.stringify({
+      step_type: "tool",
+      tool_name: "send_message",
+      parameters: { Message: "Done with task" },
+    });
+    expect(provider.parseStreamLine(lineMsg)).toEqual([
+      {
+        type: "tool_call",
+        name: "send_message",
+        args: "Done with task",
+      },
+    ]);
+  });
+
+  it("parseStreamLine falls back to JSON.stringify(parameters) for unknown tools", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      step_type: "tool",
+      tool_name: "custom_analyzer",
+      tool_info: {
+        parameters: {
+          mode: "deep",
+          count: 5,
+        },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      {
+        type: "tool_call",
+        name: "custom_analyzer",
+        args: '{"mode":"deep","count":5}',
+      },
+    ]);
+  });
+
+  it("parseStreamLine falls back to JSON.stringify(parameters) when known tool lacks white-listed field", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      step_type: "tool",
+      tool_name: "run_command",
+      tool_info: {
+        parameters: {
+          flags: "-la",
+        },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      {
+        type: "tool_call",
+        name: "run_command",
+        args: '{"flags":"-la"}',
+      },
+    ]);
+  });
+
+  it("parseStreamLine skips tool event without tool_name", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      step_type: "tool",
+      tool_info: {
+        parameters: {
+          CommandLine: "npm test",
+        },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([]);
+  });
+
+  it("parseStreamLine extracts result and usage from result event with structured result object", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "result",
+      result: {
+        response: "All tests passed successfully!",
+        usage: {
+          input_tokens: 1500,
+          output_tokens: 300,
+          cache_read_input_tokens: 500,
+          cache_creation_input_tokens: 200,
+        },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "result", result: "All tests passed successfully!" },
+      {
+        type: "usage",
+        usage: {
+          inputTokens: 1500,
+          cacheCreationInputTokens: 200,
+          cacheReadInputTokens: 500,
+          outputTokens: 300,
+        },
+      },
+    ]);
+  });
+
+  it("parseStreamLine extracts result when result is a string", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "result",
+      result: "Done!",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "result", result: "Done!" },
+    ]);
+  });
+
+  it("parseStreamLine extracts usage from top-level usage field or camelCase fields", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "result",
+      response: "Done with camelCase",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadInputTokens: 20,
+        cacheCreationInputTokens: 10,
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "result", result: "Done with camelCase" },
+      {
+        type: "usage",
+        usage: {
+          inputTokens: 100,
+          cacheCreationInputTokens: 10,
+          cacheReadInputTokens: 20,
+          outputTokens: 50,
+        },
+      },
+    ]);
+  });
+
+  it("parseStreamLine handles result event with missing response or usage gracefully", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(
+      provider.parseStreamLine(JSON.stringify({ event: "result" })),
+    ).toEqual([]);
+    expect(
+      provider.parseStreamLine(JSON.stringify({ event: "result", result: {} })),
+    ).toEqual([]);
+  });
+
+  it("parseStreamLine captures error and agent_error events as result", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line1 = JSON.stringify({
+      event: "error",
+      error: "Quota exceeded",
+    });
+    expect(provider.parseStreamLine(line1)).toEqual([
+      { type: "result", result: "Quota exceeded" },
+    ]);
+
+    const line2 = JSON.stringify({
+      event: "agent_error",
+      error: { message: "Authentication failed" },
+    });
+    expect(provider.parseStreamLine(line2)).toEqual([
+      { type: "result", result: "Authentication failed" },
+    ]);
+
+    const line3 = JSON.stringify({
+      event: "error",
+      message: "Invalid parameters",
+    });
+    expect(provider.parseStreamLine(line3)).toEqual([
+      { type: "result", result: "Invalid parameters" },
+    ]);
+  });
+
+  it("parseStreamLine end-to-end: streams init, text deltas, tool calls, and final result with usage", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const streamLines = [
+      JSON.stringify({
+        event: "init",
+        conversation_id: "conv-agy-987",
+      }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_type: "agent_response",
+          text_delta: "I will check the files.",
+        },
+      }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_info: {
+            parameters: { CommandLine: "ls -la" },
+          },
+        },
+      }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_type: "agent_response",
+          text_delta: " All done.",
+        },
+      }),
+      JSON.stringify({
+        event: "result",
+        result: {
+          response: "I will check the files. All done.",
+          usage: {
+            input_tokens: 1200,
+            output_tokens: 250,
+            cache_read_input_tokens: 400,
+            cache_creation_input_tokens: 100,
+          },
+        },
+      }),
+    ];
+
+    const allEvents = streamLines.flatMap((line) =>
+      provider.parseStreamLine(line),
+    );
+
+    expect(allEvents).toEqual([
+      { type: "session_id", sessionId: "conv-agy-987" },
+      { type: "text", text: "I will check the files." },
+      { type: "tool_call", name: "run_command", args: "ls -la" },
+      { type: "text", text: " All done." },
+      { type: "result", result: "I will check the files. All done." },
+      {
+        type: "usage",
+        usage: {
+          inputTokens: 1200,
+          cacheCreationInputTokens: 100,
+          cacheReadInputTokens: 400,
+          outputTokens: 250,
+        },
+      },
+    ]);
   });
 });
 
