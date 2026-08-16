@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  antigravity,
+  agy,
   claudeCode,
   codex,
   copilot,
@@ -1945,6 +1947,186 @@ describe("copilot factory", () => {
   it("bakes model into each provider instance independently", () => {
     const provider1 = copilot("model-a");
     const provider2 = copilot("model-b");
+    expect(provider1.buildPrintCommand(opts("test")).command).toContain(
+      "model-a",
+    );
+    expect(provider2.buildPrintCommand(opts("test")).command).toContain(
+      "model-b",
+    );
+    expect(provider1.buildPrintCommand(opts("test")).command).not.toContain(
+      "model-b",
+    );
+  });
+});
+
+describe("antigravity factory", () => {
+  it("returns a provider with name 'antigravity'", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(provider.name).toBe("antigravity");
+  });
+
+  it("agy is an alias for antigravity", () => {
+    expect(agy).toBe(antigravity);
+    const provider = agy("gemini-2.5-pro");
+    expect(provider.name).toBe("antigravity");
+  });
+
+  it("does not expose envManifest or dockerfileTemplate", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(provider).not.toHaveProperty("envManifest");
+    expect(provider).not.toHaveProperty("dockerfileTemplate");
+  });
+
+  it("defaults captureSessions to false", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(provider.captureSessions).toBe(false);
+  });
+
+  it("allows overriding captureSessions in options", () => {
+    const provider = antigravity("gemini-2.5-pro", { captureSessions: true });
+    expect(provider.captureSessions).toBe(true);
+  });
+
+  it("buildPrintCommand includes the model and base flags", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand(opts("do something"));
+    expect(command).toContain("agy -p -");
+    expect(command).toContain("--output-format stream-json");
+    expect(command).toContain("--model 'gemini-2.5-pro'");
+  });
+
+  it("buildPrintCommand delivers prompt via stdin, not argv", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command, stdin } = provider.buildPrintCommand(opts("do something"));
+    expect(command).toContain("-p -");
+    expect(command).not.toContain("'do something'");
+    expect(stdin).toBe("do something");
+  });
+
+  it("buildPrintCommand shell-escapes the model", () => {
+    const provider = antigravity("model'with'quotes");
+    const { command } = provider.buildPrintCommand(opts("do something"));
+    expect(command).toContain("--model 'model'\\''with'\\''quotes'");
+  });
+
+  it("buildPrintCommand includes --dangerously-skip-permissions when true", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand({
+      prompt: "test",
+      dangerouslySkipPermissions: true,
+    });
+    expect(command).toContain("--dangerously-skip-permissions");
+  });
+
+  it("buildPrintCommand omits --dangerously-skip-permissions when false", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand({
+      prompt: "test",
+      dangerouslySkipPermissions: false,
+    });
+    expect(command).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("buildPrintCommand includes --effort when specified", () => {
+    const provider = antigravity("gemini-2.5-pro", { effort: "high" });
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).toContain("--effort high");
+  });
+
+  it("buildPrintCommand omits --effort when not specified", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).not.toContain("--effort");
+  });
+
+  it("supports all effort levels (low, medium, high)", () => {
+    for (const effort of ["low", "medium", "high"] as const) {
+      const provider = antigravity("gemini-2.5-pro", { effort });
+      expect(provider.buildPrintCommand(opts("test")).command).toContain(
+        `--effort ${effort}`,
+      );
+    }
+  });
+
+  it("buildPrintCommand includes --mode when specified", () => {
+    for (const mode of ["accept-edits", "plan"] as const) {
+      const provider = antigravity("gemini-2.5-pro", { mode });
+      expect(provider.buildPrintCommand(opts("test")).command).toContain(
+        `--mode ${mode}`,
+      );
+    }
+  });
+
+  it("buildPrintCommand omits --mode when not specified", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).not.toMatch(/--mode\b/);
+  });
+
+  it("buildPrintCommand includes --agent when specified", () => {
+    const provider = antigravity("gemini-2.5-pro", { agent: "build" });
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).toContain("--agent 'build'");
+  });
+
+  it("buildPrintCommand omits --agent when not specified", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).not.toContain("--agent");
+  });
+
+  it("buildPrintCommand includes --disable-slash-commands when true", () => {
+    const provider = antigravity("gemini-2.5-pro", {
+      disableSlashCommands: true,
+    });
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).toContain("--disable-slash-commands");
+  });
+
+  it("buildPrintCommand omits --disable-slash-commands when false or omitted", () => {
+    const provider = antigravity("gemini-2.5-pro", {
+      disableSlashCommands: false,
+    });
+    expect(provider.buildPrintCommand(opts("test")).command).not.toContain(
+      "--disable-slash-commands",
+    );
+    const provider2 = antigravity("gemini-2.5-pro");
+    expect(provider2.buildPrintCommand(opts("test")).command).not.toContain(
+      "--disable-slash-commands",
+    );
+  });
+
+  it("buildPrintCommand includes --conversation when resumeSession is provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand({
+      prompt: "test",
+      dangerouslySkipPermissions: true,
+      resumeSession: "session-123",
+    });
+    expect(command).toContain("--conversation 'session-123'");
+  });
+
+  it("buildPrintCommand omits --conversation when resumeSession is not provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).not.toContain("--conversation");
+  });
+
+  it("accepts an env option and exposes it on the provider", () => {
+    const provider = antigravity("gemini-2.5-pro", {
+      env: { GEMINI_API_KEY: "test-key" },
+    });
+    expect(provider.env).toEqual({ GEMINI_API_KEY: "test-key" });
+  });
+
+  it("defaults env to empty object when not provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(provider.env).toEqual({});
+  });
+
+  it("bakes model into each provider instance independently", () => {
+    const provider1 = antigravity("model-a");
+    const provider2 = antigravity("model-b");
     expect(provider1.buildPrintCommand(opts("test")).command).toContain(
       "model-a",
     );

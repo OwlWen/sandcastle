@@ -1265,3 +1265,64 @@ export const claudeCode = (
     return undefined;
   },
 });
+
+// ---------------------------------------------------------------------------
+// Google Antigravity CLI (agy) agent provider
+// ---------------------------------------------------------------------------
+
+/** Options for the Google Antigravity CLI agent provider. */
+export interface AntigravityOptions {
+  /** Reasoning effort for the session ("low" | "medium" | "high"). Maps to the CLI's --effort flag. */
+  readonly effort?: "low" | "medium" | "high";
+  /** Execution mode for the session ("accept-edits" | "plan"). Maps to the CLI's --mode flag. */
+  readonly mode?: "accept-edits" | "plan";
+  /** Named Antigravity subagent to run. Maps to the CLI's --agent flag. */
+  readonly agent?: string;
+  /** When true, disables slash commands and skill expansion in print mode. Maps to the CLI's --disable-slash-commands flag. */
+  readonly disableSlashCommands?: boolean;
+  /** Environment variables injected by this agent provider. */
+  readonly env?: Record<string, string>;
+  /** When true, session capture is enabled for this provider. Default: false. */
+  readonly captureSessions?: boolean;
+}
+
+export const antigravity = (
+  model: string,
+  options?: AntigravityOptions,
+): AgentProvider => ({
+  name: "antigravity",
+  env: options?.env ?? {},
+  captureSessions: options?.captureSessions ?? false,
+
+  buildPrintCommand({
+    prompt,
+    dangerouslySkipPermissions,
+    resumeSession,
+  }: AgentCommandOptions): PrintCommand {
+    const permissionsFlag = dangerouslySkipPermissions
+      ? " --dangerously-skip-permissions"
+      : "";
+    const effortFlag = options?.effort ? ` --effort ${options.effort}` : "";
+    const modeFlag = options?.mode ? ` --mode ${options.mode}` : "";
+    const agentFlag = options?.agent
+      ? ` --agent ${shellEscape(options.agent)}`
+      : "";
+    const disableSlashCommandsFlag = options?.disableSlashCommands
+      ? " --disable-slash-commands"
+      : "";
+    const resumeFlag = resumeSession
+      ? ` --conversation ${shellEscape(resumeSession)}`
+      : "";
+
+    return {
+      command: `agy -p - --output-format stream-json --model ${shellEscape(model)}${permissionsFlag}${effortFlag}${modeFlag}${agentFlag}${disableSlashCommandsFlag}${resumeFlag}`,
+      stdin: prompt,
+    };
+  },
+
+  parseStreamLine(_line: string): ParsedStreamEvent[] {
+    return [];
+  },
+});
+
+export const agy = antigravity;
