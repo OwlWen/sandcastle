@@ -101,6 +101,47 @@ await interactive({
 
 You can also [create your own provider](#custom-sandbox-providers) using `createBindMountSandboxProvider` or `createIsolatedSandboxProvider`.
 
+## Agent Providers
+
+Sandcastle uses an `AgentProvider` to drive an AI coding tool. The `agent` option on `run()`, `interactive()`, `createSandbox()`, and `createWorktree()` accepts any built-in or custom agent provider. Built-in agent providers are exported directly from `@ai-hero/sandcastle`:
+
+| Provider           | Factory function(s)                        | CLI binary | Features & Notes                                                                        |
+| ------------------ | ------------------------------------------ | ---------- | --------------------------------------------------------------------------------------- |
+| Claude Code        | `claudeCode(model, options?)`              | `claude`   | Default provider. AFK & interactive, session capture & resume, reasoning effort levels  |
+| Google Antigravity | `antigravity(model, options?)`, `agy(...)` | `agy`      | AFK & interactive, reasoning effort, execution modes, subagents, slash command controls |
+| OpenAI Codex       | `codex(model, options?)`                   | `codex`    | AFK runs, session capture & resume, reasoning effort                                    |
+| Pi                 | `pi(model, options?)`                      | `pi`       | AFK runs, session capture & resume, thinking levels                                     |
+| Cursor             | `cursor(model, options?)`                  | `agent`    | AFK runs                                                                                |
+| OpenCode           | `opencode(model, options?)`                | `opencode` | AFK runs                                                                                |
+| GitHub Copilot     | `copilot(model, options?)`                 | `copilot`  | AFK runs                                                                                |
+
+```typescript
+import { run, interactive, antigravity, agy } from "@ai-hero/sandcastle";
+import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
+
+// Run an AFK task in a Docker sandbox using Antigravity:
+await run({
+  agent: antigravity("gemini-2.5-pro", {
+    effort: "high",
+    mode: "accept-edits",
+    disableSlashCommands: true,
+  }),
+  sandbox: docker(),
+  promptFile: ".sandcastle/prompt.md",
+});
+
+// Run an interactive session directly on the host using the agy alias:
+await interactive({
+  agent: agy("gemini-2.5-pro", {
+    effort: "medium",
+    mode: "plan",
+  }),
+  sandbox: noSandbox(),
+  prompt: "Investigate and fix the failing unit test",
+});
+```
+
 ## API
 
 Sandcastle exports a programmatic `run()` function for use in scripts, CI pipelines, or custom tooling. The examples below use `docker()`, but any `SandboxProvider` works in its place.
@@ -831,27 +872,27 @@ Removes the Podman image.
 
 ### `RunOptions`
 
-| Option                     | Type               | Default                       | Description                                                                                                                                                                                                                  |
-| -------------------------- | ------------------ | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent`                    | AgentProvider      | —                             | **Required.** Agent provider (e.g. `claudeCode("claude-opus-4-8")`, `pi("claude-sonnet-4-6")`, `codex("gpt-5.4")`, `cursor("composer-2")`, `opencode("opencode/big-pickle")`, `copilot("claude-sonnet-4.5")`)                |
-| `sandbox`                  | SandboxProvider    | —                             | **Required.** Sandbox provider (e.g. `docker()`, `podman()`, `docker({ imageName: "sandcastle:local" })`)                                                                                                                    |
-| `cwd`                      | string             | `process.cwd()`               | Host repo directory — anchor for `.sandcastle/` artifacts and git operations. Relative paths resolve against `process.cwd()`.                                                                                                |
-| `prompt`                   | string             | —                             | Inline prompt (mutually exclusive with `promptFile`)                                                                                                                                                                         |
-| `promptFile`               | string             | —                             | Path to prompt file (mutually exclusive with `prompt`). Resolves against `process.cwd()`, **not** `cwd`.                                                                                                                     |
-| `maxIterations`            | number             | `1`                           | Maximum iterations to run                                                                                                                                                                                                    |
-| `hooks`                    | SandboxHooks       | —                             | Lifecycle hooks (`host.*`, `sandbox.*`)                                                                                                                                                                                      |
-| `name`                     | string             | —                             | Display name for the run, shown as a prefix in log output                                                                                                                                                                    |
-| `promptArgs`               | PromptArgs         | —                             | Key-value map for `{{KEY}}` placeholder substitution                                                                                                                                                                         |
-| `branchStrategy`           | BranchStrategy     | per-provider default          | Branch strategy: `{ type: 'head' }`, `{ type: 'merge-to-head' }`, or `{ type: 'branch', branch: '…' }`                                                                                                                       |
-| `copyToWorktree`           | string[]           | —                             | Host-relative file paths to copy into the sandbox before start (not supported with `branchStrategy: { type: 'head' }`)                                                                                                       |
-| `logging`                  | object             | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`                                                                                                                                                                             |
-| `completionSignal`         | string \| string[] | `<promise>COMPLETE</promise>` | String or array of strings the agent emits to stop the iteration loop early                                                                                                                                                  |
-| `idleTimeoutSeconds`       | number             | `600`                         | Idle timeout in seconds — resets on each agent output event                                                                                                                                                                  |
-| `completionTimeoutSeconds` | number             | `60`                          | Grace window in seconds after the completion signal is observed but the agent process has not exited (hanging process). See [Hanging processes after the completion signal](#hanging-processes-after-the-completion-signal). |
-| `resumeSession`            | string             | —                             | Resume a prior session by ID for agents that support resume. Incompatible with `maxIterations > 1`. Session file must exist on host.                                                                                         |
-| `signal`                   | AbortSignal        | —                             | Cancel the run when aborted. Kills the in-flight agent subprocess and cancels lifecycle hooks; the worktree is preserved on disk. Rejects with `signal.reason`.                                                              |
-| `timeouts`                 | Timeouts           | —                             | Override default timeouts for built-in lifecycle steps: `copyToWorktreeMs` (60 000), `gitSetupMs` (10 000), `commitCollectionMs` (30 000), `mergeToHostMs` (30 000).                                                         |
-| `output`                   | OutputDefinition   | —                             | Structured output definition (`Output.object(…)` or `Output.string(…)`). Requires `maxIterations === 1`. See [Structured output](#structured-output).                                                                        |
+| Option                     | Type               | Default                       | Description                                                                                                                                                                                                                                                             |
+| -------------------------- | ------------------ | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent`                    | AgentProvider      | —                             | **Required.** Agent provider (e.g. `claudeCode("claude-opus-4-8")`, `antigravity("gemini-2.5-pro")`, `agy("gemini-2.5-pro")`, `pi("claude-sonnet-4-6")`, `codex("gpt-5.4")`, `cursor("composer-2")`, `opencode("opencode/big-pickle")`, `copilot("claude-sonnet-4.5")`) |
+| `sandbox`                  | SandboxProvider    | —                             | **Required.** Sandbox provider (e.g. `docker()`, `podman()`, `docker({ imageName: "sandcastle:local" })`)                                                                                                                                                               |
+| `cwd`                      | string             | `process.cwd()`               | Host repo directory — anchor for `.sandcastle/` artifacts and git operations. Relative paths resolve against `process.cwd()`.                                                                                                                                           |
+| `prompt`                   | string             | —                             | Inline prompt (mutually exclusive with `promptFile`)                                                                                                                                                                                                                    |
+| `promptFile`               | string             | —                             | Path to prompt file (mutually exclusive with `prompt`). Resolves against `process.cwd()`, **not** `cwd`.                                                                                                                                                                |
+| `maxIterations`            | number             | `1`                           | Maximum iterations to run                                                                                                                                                                                                                                               |
+| `hooks`                    | SandboxHooks       | —                             | Lifecycle hooks (`host.*`, `sandbox.*`)                                                                                                                                                                                                                                 |
+| `name`                     | string             | —                             | Display name for the run, shown as a prefix in log output                                                                                                                                                                                                               |
+| `promptArgs`               | PromptArgs         | —                             | Key-value map for `{{KEY}}` placeholder substitution                                                                                                                                                                                                                    |
+| `branchStrategy`           | BranchStrategy     | per-provider default          | Branch strategy: `{ type: 'head' }`, `{ type: 'merge-to-head' }`, or `{ type: 'branch', branch: '…' }`                                                                                                                                                                  |
+| `copyToWorktree`           | string[]           | —                             | Host-relative file paths to copy into the sandbox before start (not supported with `branchStrategy: { type: 'head' }`)                                                                                                                                                  |
+| `logging`                  | object             | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`                                                                                                                                                                                                                        |
+| `completionSignal`         | string \| string[] | `<promise>COMPLETE</promise>` | String or array of strings the agent emits to stop the iteration loop early                                                                                                                                                                                             |
+| `idleTimeoutSeconds`       | number             | `600`                         | Idle timeout in seconds — resets on each agent output event                                                                                                                                                                                                             |
+| `completionTimeoutSeconds` | number             | `60`                          | Grace window in seconds after the completion signal is observed but the agent process has not exited (hanging process). See [Hanging processes after the completion signal](#hanging-processes-after-the-completion-signal).                                            |
+| `resumeSession`            | string             | —                             | Resume a prior session by ID for agents that support resume. Incompatible with `maxIterations > 1`. Session file must exist on host.                                                                                                                                    |
+| `signal`                   | AbortSignal        | —                             | Cancel the run when aborted. Kills the in-flight agent subprocess and cancels lifecycle hooks; the worktree is preserved on disk. Rejects with `signal.reason`.                                                                                                         |
+| `timeouts`                 | Timeouts           | —                             | Override default timeouts for built-in lifecycle steps: `copyToWorktreeMs` (60 000), `gitSetupMs` (10 000), `commitCollectionMs` (30 000), `mergeToHostMs` (30 000).                                                                                                    |
+| `output`                   | OutputDefinition   | —                             | Structured output definition (`Output.object(…)` or `Output.string(…)`). Requires `maxIterations === 1`. See [Structured output](#structured-output).                                                                                                                   |
 
 ### `RunResult`
 
@@ -996,6 +1037,28 @@ agent: pi("claude-sonnet-4-6", { thinking: "high" });
 | `thinking`        | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | —       | Pi reasoning effort level via the `--thinking` flag      |
 | `env`             | `Record<string, string>`                                                 | `{}`    | Environment variables injected by this agent provider    |
 | `captureSessions` | `boolean`                                                                | `true`  | Capture pi session JSONL to host for `pi --session <id>` |
+
+### `AntigravityOptions`
+
+The `antigravity()` factory (and its `agy()` alias) accepts an optional second argument for provider-specific options:
+
+```typescript
+agent: antigravity("gemini-2.5-pro", {
+  effort: "high",
+  mode: "accept-edits",
+  agent: "build",
+  disableSlashCommands: true,
+});
+```
+
+| Option                 | Type                              | Default | Description                                                                                                                |
+| ---------------------- | --------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `effort`               | `"low"` \| `"medium"` \| `"high"` | —       | Antigravity reasoning effort level. Maps to the CLI's `--effort` flag.                                                     |
+| `mode`                 | `"accept-edits"` \| `"plan"`      | —       | Execution mode for the session. Maps to the CLI's `--mode` flag.                                                           |
+| `agent`                | `string`                          | —       | Named Antigravity subagent to run (e.g. `"build"`). Maps to the CLI's `--agent` flag.                                      |
+| `disableSlashCommands` | `boolean`                         | —       | When `true`, disables slash commands and skill expansion in print mode. Maps to the CLI's `--disable-slash-commands` flag. |
+| `env`                  | `Record<string, string>`          | `{}`    | Environment variables injected by this agent provider.                                                                     |
+| `captureSessions`      | `boolean`                         | `false` | When `true`, session capture is enabled for this provider.                                                                 |
 
 ### Provider `env`
 
