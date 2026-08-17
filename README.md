@@ -806,7 +806,7 @@ Select a template during `sandcastle init` when prompted, or re-run init in a fr
 
 ### `sandcastle init`
 
-Scaffolds the `.sandcastle/` config directory and builds the container image. This is the first command you run in a new repo. You choose a sandbox provider (Docker or Podman) during init — selecting Podman writes a `Containerfile` instead of `Dockerfile` and uses `sandcastle podman build-image` for the build step.
+Scaffolds the `.sandcastle/` config directory and builds the container image. This is the first command you run in a new repo. You choose a sandbox provider (Docker or Podman) and an agent provider (such as Claude Code or Google Antigravity) during init — selecting Podman writes a `Containerfile` instead of `Dockerfile` and uses `sandcastle podman build-image` for the build step. Selecting Antigravity (`antigravity` / `agy`) automatically configures `~/.gemini` credential mounting into the sandbox so you can use host Google AI Pro credentials seamlessly, or provide `GEMINI_API_KEY`.
 
 Init detects your host package manager (npm, pnpm, yarn, or bun) from a `packageManager` field or lockfile, defaulting to npm. Templates whose `main` file imports a host dependency — the planner templates import [Zod](https://zod.dev) for their `<plan>` output schema — prompt you to install it with that package manager when it isn't already in your `package.json`, so the first `npx tsx .sandcastle/main.ts` doesn't fail with `ERR_MODULE_NOT_FOUND`.
 
@@ -815,8 +815,8 @@ Every interactive prompt has a paired `--flag` so the entire init can run non-in
 | Option                    | Required | Default                      | Description                                                                                                    |
 | ------------------------- | -------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | `--image-name`            | No       | `sandcastle:<repo-dir-name>` | Docker image name                                                                                              |
-| `--agent`                 | No       | Interactive prompt           | Agent to use (`claude-code`, `pi`, `codex`, `cursor`, `opencode`, `copilot`)                                   |
-| `--model`                 | No       | Agent's default model        | Model to use (e.g. `claude-sonnet-4-6`). Defaults to agent's default                                           |
+| `--agent`                 | No       | Interactive prompt           | Agent to use (`claude-code`, `antigravity`, `agy`, `pi`, `codex`, `cursor`, `opencode`, `copilot`)             |
+| `--model`                 | No       | Agent's default model        | Model to use (e.g. `claude-sonnet-4-6`, `gemini-2.5-pro`). Defaults to agent's default                         |
 | `--sandbox`               | No       | Interactive prompt           | Sandbox provider to use (`docker`, `podman`)                                                                   |
 | `--template`              | No       | Interactive prompt           | Template to scaffold (e.g. `blank`, `simple-loop`)                                                             |
 | `--issue-tracker`         | No       | Interactive prompt           | Issue tracker to use (`github-issues`, `beads`, `custom`)                                                      |
@@ -1059,6 +1059,13 @@ agent: antigravity("gemini-2.5-pro", {
 | `disableSlashCommands` | `boolean`                         | —       | When `true`, disables slash commands and skill expansion in print mode. Maps to the CLI's `--disable-slash-commands` flag. |
 | `env`                  | `Record<string, string>`          | `{}`    | Environment variables injected by this agent provider.                                                                     |
 | `captureSessions`      | `boolean`                         | `false` | When `true`, session capture is enabled for this provider.                                                                 |
+
+#### Authentication & Credentials
+
+Antigravity supports two authentication workflows:
+
+- **Google AI Pro (OAuth credentials mount)**: When logged into `agy` on your host machine, `sandcastle init --agent antigravity` (or `--agent agy`) automatically configures `~/.gemini` mount into Docker/Podman sandboxes (`mounts: [{ hostPath: "~/.gemini", sandboxPath: "~/.gemini" }]`). This allows the agent container to access your subscription without needing API keys.
+- **Gemini API Key**: Set `GEMINI_API_KEY=your_key` in `.sandcastle/.env` (or pass it through provider `env`).
 
 ### Provider `env`
 

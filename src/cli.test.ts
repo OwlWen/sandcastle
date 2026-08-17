@@ -1,5 +1,5 @@
 import { exec } from "node:child_process";
-import { mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -185,6 +185,7 @@ describe("sandcastle CLI", () => {
       const output = stdout + stderr;
       expect(output).toContain("nonexistent");
       expect(output).toContain("claude-code");
+      expect(output).toContain("antigravity");
     }
   });
 
@@ -291,5 +292,73 @@ describe("sandcastle CLI", () => {
     expect(stdout).toContain("Init complete");
     const entries = await readdir(join(hostDir, ".sandcastle"));
     expect(entries).toContain("SETUP_ISSUE_TRACKER.md");
+  });
+
+  it("init with --agent antigravity scaffolds correctly with mounts and antigravity imports", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "cli-host-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const { stdout } = await runCli(
+      "init --agent antigravity --template blank --sandbox docker --issue-tracker beads --build-image false",
+      hostDir,
+    );
+
+    expect(stdout).toContain("Init complete");
+    expect(stdout).toContain("Google AI Pro");
+    expect(stdout).toContain("~/.gemini");
+    const entries = await readdir(join(hostDir, ".sandcastle"));
+    expect(entries).toContain("Dockerfile");
+    expect(entries).toContain("prompt.md");
+    expect(entries).toContain("main.mts");
+    expect(entries).toContain(".env.example");
+
+    const mainContent = await readFile(
+      join(hostDir, ".sandcastle", "main.mts"),
+      "utf-8",
+    );
+    expect(mainContent).toContain(
+      'import { run, antigravity } from "@ai-hero/sandcastle";',
+    );
+    expect(mainContent).toContain('antigravity("gemini-2.5-pro")');
+    expect(mainContent).toContain(
+      'sandbox: docker({ mounts: [{ hostPath: "~/.gemini", sandboxPath: "~/.gemini" }] })',
+    );
+
+    const dockerfileContent = await readFile(
+      join(hostDir, ".sandcastle", "Dockerfile"),
+      "utf-8",
+    );
+    expect(dockerfileContent).toContain("antigravity-cli");
+
+    const envExampleContent = await readFile(
+      join(hostDir, ".sandcastle", ".env.example"),
+      "utf-8",
+    );
+    expect(envExampleContent).toContain("GEMINI_API_KEY");
+  });
+
+  it("init with --agent agy resolves alias and scaffolds correctly", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "cli-host-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const { stdout } = await runCli(
+      "init --agent agy --template blank --sandbox docker --issue-tracker beads --build-image false",
+      hostDir,
+    );
+
+    expect(stdout).toContain("Init complete");
+    const mainContent = await readFile(
+      join(hostDir, ".sandcastle", "main.mts"),
+      "utf-8",
+    );
+    expect(mainContent).toContain(
+      'import { run, antigravity } from "@ai-hero/sandcastle";',
+    );
+    expect(mainContent).toContain('antigravity("gemini-2.5-pro")');
+    expect(mainContent).toContain(
+      'sandbox: docker({ mounts: [{ hostPath: "~/.gemini", sandboxPath: "~/.gemini" }] })',
+    );
   });
 });
