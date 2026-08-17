@@ -523,7 +523,8 @@ GITHUB_TOKEN=`,
     defaultModel: "gemini-2.5-pro",
     factoryImport: "antigravity",
     dockerfileTemplate: ANTIGRAVITY_DOCKERFILE,
-    envExample: `# Gemini API key (or mount Google AI Pro credentials)
+    envExample: `# Gemini API key (get one from https://aistudio.google.com/app/apikey)
+# Or mount Google AI Pro credentials via ~/.gemini
 GEMINI_API_KEY=`,
     envHint:
       "   To use your Google AI Pro subscription instead of an API key, log in with `agy` on your host (credentials in ~/.gemini are mounted automatically). Otherwise, set GEMINI_API_KEY in .sandcastle/.env.",

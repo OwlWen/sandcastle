@@ -185,7 +185,7 @@ describe("sandcastle CLI", () => {
       const output = stdout + stderr;
       expect(output).toContain("nonexistent");
       expect(output).toContain("claude-code");
-      expect(output).toContain("antigravity");
+      expect(output).toContain("antigravity (agy)");
     }
   });
 
@@ -336,6 +336,9 @@ describe("sandcastle CLI", () => {
       "utf-8",
     );
     expect(envExampleContent).toContain("GEMINI_API_KEY");
+    expect(envExampleContent).toContain(
+      "https://aistudio.google.com/app/apikey",
+    );
   });
 
   it("init with --agent agy resolves alias and scaffolds correctly", async () => {

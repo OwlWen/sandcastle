@@ -112,6 +112,9 @@ describe("Agent registry", () => {
     expect(agent!.dockerfileTemplate).toContain(
       "npm install -g antigravity-cli",
     );
+    expect(agent!.envExample).toContain(
+      "https://aistudio.google.com/app/apikey",
+    );
   });
 
   it("getAgent resolves 'antigravity' and alias 'agy'", () => {

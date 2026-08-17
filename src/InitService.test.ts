@@ -923,6 +923,22 @@ describe("InitService scaffold", () => {
     expect(dockerfile).not.toContain("{{ISSUE_TRACKER_TOOLS}}");
   });
 
+  it("scaffolds antigravity agent with .env.example containing API key URL and dual auth hints", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: antigravityAgent,
+      model: "gemini-2.5-pro",
+    });
+
+    const envExample = await readFile(
+      join(dir, ".sandcastle", ".env.example"),
+      "utf-8",
+    );
+    expect(envExample).toContain("GEMINI_API_KEY=");
+    expect(envExample).toContain("https://aistudio.google.com/app/apikey");
+    expect(envExample).toContain("Google AI Pro credentials via ~/.gemini");
+  });
+
   it("scaffolds main.mts with antigravity factory import when antigravity agent selected", async () => {
     const dir = await makeDir();
     await runScaffold(dir, {

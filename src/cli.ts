@@ -272,7 +272,13 @@ const initCommand = Command.make(
       if (agentFlag._tag === "Some") {
         const entry = getAgent(agentFlag.value);
         if (!entry) {
-          const names = agents.map((a) => a.name).join(", ");
+          const names = agents
+            .map((a) =>
+              a.aliases && a.aliases.length > 0
+                ? `${a.name} (${a.aliases.join(", ")})`
+                : a.name,
+            )
+            .join(", ");
           yield* Effect.fail(
             new InitError({
               message: `Unknown agent "${agentFlag.value}". Available: ${names}`,
