@@ -110,7 +110,10 @@ describe("Agent registry", () => {
     expect(agent!.factoryImport).toBe("antigravity");
     expect(agent!.dockerfileTemplate).toContain("FROM");
     expect(agent!.dockerfileTemplate).toContain(
-      "npm install -g antigravity-cli",
+      "https://antigravity.google/cli/install.sh",
+    );
+    expect(agent!.dockerfileTemplate).toContain(
+      'ENV PATH="/home/agent/.local/bin:$PATH"',
     );
     expect(agent!.envExample).toContain(
       "https://aistudio.google.com/app/apikey",

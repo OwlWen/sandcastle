@@ -1992,17 +1992,16 @@ describe("antigravity factory", () => {
   it("buildPrintCommand includes the model and base flags", () => {
     const provider = antigravity("gemini-2.5-pro");
     const { command } = provider.buildPrintCommand(opts("do something"));
-    expect(command).toContain("agy -p -");
+    expect(command).toContain("agy -p 'do something'");
     expect(command).toContain("--output-format stream-json");
     expect(command).toContain("--model 'gemini-2.5-pro'");
   });
 
-  it("buildPrintCommand delivers prompt via stdin, not argv", () => {
+  it("buildPrintCommand delivers prompt via -p flag with shell escaping", () => {
     const provider = antigravity("gemini-2.5-pro");
     const { command, stdin } = provider.buildPrintCommand(opts("do something"));
-    expect(command).toContain("-p -");
-    expect(command).not.toContain("'do something'");
-    expect(stdin).toBe("do something");
+    expect(command).toContain("agy -p 'do something'");
+    expect(stdin).toBeUndefined();
   });
 
   it("buildPrintCommand shell-escapes the model", () => {
