@@ -196,6 +196,13 @@ export interface AgentEntry {
   readonly dockerfileTemplate: string;
   /** Lines to include in the generated `.env.example` for this agent's API key. */
   readonly envExample: string;
+  /** Optional hint printed in next steps under the env vars step. */
+  readonly envHint?: string;
+  /** Optional host directories to bind-mount in scaffolded sandbox configurations. */
+  readonly scaffoldMounts?: readonly {
+    readonly hostPath: string;
+    readonly sandboxPath: string;
+  }[];
   /**
    * Copy-pasteable interactive command that feeds the custom-issue-tracker
    * setup prompt to this agent's CLI on the host. Printed in init's next steps
@@ -452,6 +459,8 @@ const AGENT_REGISTRY: AgentEntry[] = [
 CLAUDE_CODE_OAUTH_TOKEN=
 # Or use an Anthropic API key instead — uncomment and fill in:
 # ANTHROPIC_API_KEY=`,
+    envHint:
+      "   To use your Claude subscription instead of an API key, run `claude setup-token` on your host and paste the result into CLAUDE_CODE_OAUTH_TOKEN.",
     setupCommand: `claude "$(cat ${SETUP_ISSUE_TRACKER_PATH})"`,
   },
   {
@@ -516,6 +525,9 @@ GITHUB_TOKEN=`,
     dockerfileTemplate: ANTIGRAVITY_DOCKERFILE,
     envExample: `# Gemini API key (or mount Google AI Pro credentials)
 GEMINI_API_KEY=`,
+    envHint:
+      "   To use your Google AI Pro subscription instead of an API key, log in with `agy` on your host (credentials in ~/.gemini are mounted automatically). Otherwise, set GEMINI_API_KEY in .sandcastle/.env.",
+    scaffoldMounts: [{ hostPath: "~/.gemini", sandboxPath: "~/.gemini" }],
     setupCommand: `agy -i "$(cat ${SETUP_ISSUE_TRACKER_PATH})"`,
   },
 ];
@@ -690,10 +702,8 @@ export function getNextStepsLines(
       "Next steps:",
       `1. Set the required env vars in .sandcastle/.env (see .sandcastle/.env.example)`,
     ];
-    if (agent.name === "claude-code") {
-      lines.push(
-        "   To use your Claude subscription instead of an API key, run `claude setup-token` on your host and paste the result into CLAUDE_CODE_OAUTH_TOKEN.",
-      );
+    if (agent.envHint) {
+      lines.push(agent.envHint);
     }
     lines.push(
       "2. Read and customize .sandcastle/prompt.md to describe what you want the agent to do",
@@ -710,10 +720,8 @@ export function getNextStepsLines(
       "Next steps:",
       `${step++}. Set the required env vars in .sandcastle/.env (see .sandcastle/.env.example)`,
     ];
-    if (agent.name === "claude-code") {
-      lines.push(
-        "   To use your Claude subscription instead of an API key, run `claude setup-token` on your host and paste the result into CLAUDE_CODE_OAUTH_TOKEN.",
-      );
+    if (agent.envHint) {
+      lines.push(agent.envHint);
     }
     lines.push(
       `${step++}. Add "sandcastle": "npx tsx .sandcastle/${mainFilename}" to your package.json scripts`,
@@ -853,6 +861,20 @@ const rewriteMainTs = (
     // the import subpath, and every factory call site — and is a no-op when
     // docker is selected.
     content = content.replace(/\bdocker\b/g, sandboxProvider.name);
+
+    if (agent.scaffoldMounts && agent.scaffoldMounts.length > 0) {
+      const formattedMounts = agent.scaffoldMounts
+        .map(
+          (m) =>
+            `{ hostPath: "${m.hostPath}", sandboxPath: "${m.sandboxPath}" }`,
+        )
+        .join(", ");
+      const sandboxCallRe = new RegExp(`\\b${sandboxProvider.name}\\(\\)`, "g");
+      content = content.replace(
+        sandboxCallRe,
+        `${sandboxProvider.name}({ mounts: [${formattedMounts}] })`,
+      );
+    }
 
     yield* fs
       .writeFileString(mainTsPath, content)
