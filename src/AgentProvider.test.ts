@@ -2097,6 +2097,28 @@ describe("antigravity factory", () => {
     );
   });
 
+  it("buildPrintCommand includes --print-timeout when specified", () => {
+    const provider = antigravity("gemini-2.5-pro", {
+      printTimeout: "30m",
+    });
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).toContain("--print-timeout '30m'");
+  });
+
+  it("buildPrintCommand shell-escapes the print-timeout value", () => {
+    const provider = antigravity("gemini-2.5-pro", {
+      printTimeout: "10m; dangerous",
+    });
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).toContain("--print-timeout '10m; dangerous'");
+  });
+
+  it("buildPrintCommand omits --print-timeout when not specified", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).not.toContain("--print-timeout");
+  });
+
   it("buildPrintCommand includes --conversation when resumeSession is provided", () => {
     const provider = antigravity("gemini-2.5-pro");
     const { command } = provider.buildPrintCommand({

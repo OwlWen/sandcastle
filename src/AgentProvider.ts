@@ -1280,6 +1280,8 @@ export interface AntigravityOptions {
   readonly agent?: string;
   /** When true, disables slash commands and skill expansion in print mode. Maps to the CLI's --disable-slash-commands flag. */
   readonly disableSlashCommands?: boolean;
+  /** Timeout for print mode wait (e.g. "10m", "30m", "1h"). Maps to the CLI's --print-timeout flag. */
+  readonly printTimeout?: string;
   /** Environment variables injected by this agent provider. */
   readonly env?: Record<string, string>;
   /** When true, session capture is enabled for this provider. Default: false. */
@@ -1488,12 +1490,15 @@ export const antigravity = (
     const disableSlashCommandsFlag = options?.disableSlashCommands
       ? " --disable-slash-commands"
       : "";
+    const printTimeoutFlag = options?.printTimeout
+      ? ` --print-timeout ${shellEscape(options.printTimeout)}`
+      : "";
     const resumeFlag = resumeSession
       ? ` --conversation ${shellEscape(resumeSession)}`
       : "";
 
     return {
-      command: `agy -p ${shellEscape(prompt)} --output-format stream-json --model ${shellEscape(model)}${permissionsFlag}${effortFlag}${modeFlag}${agentFlag}${disableSlashCommandsFlag}${resumeFlag}`,
+      command: `agy -p ${shellEscape(prompt)} --output-format stream-json --model ${shellEscape(model)}${permissionsFlag}${effortFlag}${modeFlag}${agentFlag}${disableSlashCommandsFlag}${printTimeoutFlag}${resumeFlag}`,
     };
   },
 
