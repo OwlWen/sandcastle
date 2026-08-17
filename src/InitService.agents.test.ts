@@ -95,4 +95,31 @@ describe("Agent registry", () => {
     expect(agent!.dockerfileTemplate).toContain("FROM");
     expect(agent!.dockerfileTemplate).toContain("@github/copilot");
   });
+
+  it("listAgents includes antigravity", () => {
+    const agents = listAgents();
+    expect(agents.some((a) => a.name === "antigravity")).toBe(true);
+  });
+
+  it("getAgent returns antigravity entry with expected fields", () => {
+    const agent = getAgent("antigravity");
+    expect(agent).toBeDefined();
+    expect(agent!.name).toBe("antigravity");
+    expect(agent!.label).toBe("Google Antigravity");
+    expect(agent!.defaultModel).toBe("gemini-2.5-pro");
+    expect(agent!.factoryImport).toBe("antigravity");
+    expect(agent!.dockerfileTemplate).toContain("FROM");
+    expect(agent!.dockerfileTemplate).toContain(
+      "npm install -g antigravity-cli",
+    );
+  });
+
+  it("getAgent resolves 'antigravity' and alias 'agy'", () => {
+    const byName = getAgent("antigravity");
+    const byAlias = getAgent("agy");
+    expect(byName).toBeDefined();
+    expect(byAlias).toBeDefined();
+    expect(byName).toBe(byAlias);
+    expect(byName?.name).toBe("antigravity");
+  });
 });

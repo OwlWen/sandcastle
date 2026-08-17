@@ -29,6 +29,7 @@ const codexAgent = getAgent("codex")!;
 const cursorAgent = getAgent("cursor")!;
 const opencodeAgent = getAgent("opencode")!;
 const copilotAgent = getAgent("copilot")!;
+const antigravityAgent = getAgent("antigravity")!;
 
 const defaultOptions: ScaffoldOptions = {
   agent: claudeCodeAgent,
@@ -91,6 +92,12 @@ describe("InitService scaffold", () => {
     {
       agent: cursorAgent,
       expectedKey: "CURSOR_API_KEY=",
+      unexpectedKey: "ANTHROPIC_API_KEY=",
+      expectClaudeSetupTokenHint: false,
+    },
+    {
+      agent: antigravityAgent,
+      expectedKey: "GEMINI_API_KEY=",
       unexpectedKey: "ANTHROPIC_API_KEY=",
       expectClaudeSetupTokenHint: false,
     },
@@ -203,6 +210,7 @@ describe("InitService scaffold", () => {
     cursorAgent,
     opencodeAgent,
     copilotAgent,
+    antigravityAgent,
   ])(
     "$name Dockerfile aligns UID/GID with -o so a host GID colliding with a reserved base-image GID (e.g. macOS staff=20) doesn't fail the build",
     async (agent) => {
@@ -872,6 +880,37 @@ describe("InitService scaffold", () => {
     expect(mainTs).not.toContain("claudeCode");
   });
 
+  it("scaffolds antigravity agent with antigravity Dockerfile", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: antigravityAgent,
+      model: "gemini-2.5-pro",
+    });
+
+    const dockerfile = await readFile(
+      join(dir, ".sandcastle", "Dockerfile"),
+      "utf-8",
+    );
+    expect(dockerfile).toContain("FROM node:22-bookworm");
+    expect(dockerfile).toContain("npm install -g antigravity-cli");
+    expect(dockerfile).not.toContain("{{ISSUE_TRACKER_TOOLS}}");
+  });
+
+  it("scaffolds main.mts with antigravity factory import when antigravity agent selected", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: antigravityAgent,
+      model: "gemini-2.5-pro",
+    });
+
+    const mainTs = await readFile(
+      join(dir, ".sandcastle", "main.mts"),
+      "utf-8",
+    );
+    expect(mainTs).toContain('antigravity("gemini-2.5-pro")');
+    expect(mainTs).not.toContain("claudeCode");
+  });
+
   // --- createLabel option ---
 
   it("simple-loop prompt.md retains --label Sandcastle when createLabel is true", async () => {
@@ -1432,6 +1471,10 @@ describe("InitService scaffold", () => {
       {
         name: "copilot",
         command: `copilot -i "$(cat .sandcastle/SETUP_ISSUE_TRACKER.md)"`,
+      },
+      {
+        name: "antigravity",
+        command: `agy -i "$(cat .sandcastle/SETUP_ISSUE_TRACKER.md)"`,
       },
     ])(
       "$name has the expected interactive setupCommand",
