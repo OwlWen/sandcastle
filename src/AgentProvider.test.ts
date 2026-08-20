@@ -1992,16 +1992,37 @@ describe("antigravity factory", () => {
   it("buildPrintCommand includes the model and base flags", () => {
     const provider = antigravity("gemini-2.5-pro");
     const { command } = provider.buildPrintCommand(opts("do something"));
-    expect(command).toContain("agy -p 'do something'");
+    expect(command).toContain("agy -p -");
     expect(command).toContain("--output-format stream-json");
     expect(command).toContain("--model 'gemini-2.5-pro'");
   });
 
-  it("buildPrintCommand delivers prompt via -p flag with shell escaping", () => {
+  it("buildPrintCommand delivers prompt via stdin, not argv", () => {
     const provider = antigravity("gemini-2.5-pro");
     const { command, stdin } = provider.buildPrintCommand(opts("do something"));
-    expect(command).toContain("agy -p 'do something'");
-    expect(stdin).toBeUndefined();
+    expect(command).toContain("agy -p -");
+    expect(command).not.toContain("'do something'");
+    expect(stdin).toBe("do something");
+  });
+
+  it("buildPrintCommand delivers prompt with special characters, quotes, and newlines via stdin unchanged", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const complexPrompt =
+      "Line 1\nLine 2 with 'single' and \"double\" quotes and `backticks` and $ENV_VARS";
+    const { command, stdin } = provider.buildPrintCommand(opts(complexPrompt));
+    expect(command).toContain("agy -p -");
+    expect(command).not.toContain(complexPrompt);
+    expect(stdin).toBe(complexPrompt);
+  });
+
+  it("buildPrintCommand keeps command length small even for huge prompts (150KB+)", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const hugePrompt =
+      "diff --git a/foo.ts b/foo.ts\n" + "+ line of code\n".repeat(10000);
+    const { command, stdin } = provider.buildPrintCommand(opts(hugePrompt));
+    expect(command).toContain("agy -p -");
+    expect(command.length).toBeLessThan(300);
+    expect(stdin).toBe(hugePrompt);
   });
 
   it("buildPrintCommand shell-escapes the model", () => {
@@ -2121,12 +2142,14 @@ describe("antigravity factory", () => {
 
   it("buildPrintCommand includes --conversation when resumeSession is provided", () => {
     const provider = antigravity("gemini-2.5-pro");
-    const { command } = provider.buildPrintCommand({
+    const { command, stdin } = provider.buildPrintCommand({
       prompt: "test",
       dangerouslySkipPermissions: true,
       resumeSession: "session-123",
     });
+    expect(command).toContain("agy -p -");
     expect(command).toContain("--conversation 'session-123'");
+    expect(stdin).toBe("test");
   });
 
   it("buildPrintCommand omits --conversation when resumeSession is not provided", () => {

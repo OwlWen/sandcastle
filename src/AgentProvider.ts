@@ -1498,7 +1498,8 @@ export const antigravity = (
       : "";
 
     return {
-      command: `agy -p ${shellEscape(prompt)} --output-format stream-json --model ${shellEscape(model)}${permissionsFlag}${effortFlag}${modeFlag}${agentFlag}${disableSlashCommandsFlag}${printTimeoutFlag}${resumeFlag}`,
+      command: `agy -p - --output-format stream-json --model ${shellEscape(model)}${permissionsFlag}${effortFlag}${modeFlag}${agentFlag}${disableSlashCommandsFlag}${printTimeoutFlag}${resumeFlag}`,
+      stdin: prompt,
     };
   },
 
