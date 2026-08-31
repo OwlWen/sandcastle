@@ -329,7 +329,9 @@ describe("sandcastle CLI", () => {
       join(hostDir, ".sandcastle", "Dockerfile"),
       "utf-8",
     );
-    expect(dockerfileContent).toContain("antigravity-cli");
+    expect(dockerfileContent).toContain(
+      "RUN curl -fsSL https://antigravity.google/cli/install.sh | bash",
+    );
 
     const envExampleContent = await readFile(
       join(hostDir, ".sandcastle", ".env.example"),
