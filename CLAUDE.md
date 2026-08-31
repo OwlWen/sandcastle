@@ -19,3 +19,8 @@ Default canonical labels. Agent provider support is detailed here. See `docs/age
 ### Domain docs
 
 Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Teaching
+
+Interactive teaching workspace layout: `.teaching/<topic>/` + `.teaching/README.md`. See `docs/agents/teach.md`.
+
