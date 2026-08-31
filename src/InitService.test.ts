@@ -919,7 +919,9 @@ describe("InitService scaffold", () => {
       "utf-8",
     );
     expect(dockerfile).toContain("FROM node:22-bookworm");
-    expect(dockerfile).toContain("npm install -g antigravity-cli");
+    expect(dockerfile).toContain(
+      "RUN curl -fsSL https://antigravity.google/cli/install.sh | bash",
+    );
     expect(dockerfile).not.toContain("{{ISSUE_TRACKER_TOOLS}}");
   });
 
