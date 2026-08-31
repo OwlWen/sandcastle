@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>术语表 — WorktreeManager</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>术语表</h1>
+<p class="lesson-meta"><span>📖 WorktreeManager.ts 核心术语速查</span></p>
+
+<table>
+  <tr><th>术语</th><th>含义</th><th>出处</th></tr>
+  <tr>
+    <td><strong>Worktree</strong></td>
+    <td>Git worktree——在 <code>.sandcastle/worktrees/</code> 下创建的隔离工作目录。共享主仓库的 Object 数据库和 Refs，但有独立的 HEAD 和 index。</td>
+    <td><a href="https://git-scm.com/docs/git-worktree">Git 文档</a></td>
+  </tr>
+  <tr>
+    <td><strong>Branch strategy</strong></td>
+    <td>Sandcastle 控制 Agent 代码如何关联分支的策略。三种：<code>head</code>（直接用主目录）、<code>merge-to-head</code>（临时分支 → 合回 HEAD）、<code>branch</code>（指定分支名）。</td>
+    <td><a href="../../CONTEXT.md">CONTEXT.md</a></td>
+  </tr>
+  <tr>
+    <td><strong>Source branch</strong></td>
+    <td>Agent 实际工作的分支（由 branch strategy 决定）。</td>
+    <td><a href="../../CONTEXT.md">CONTEXT.md</a></td>
+  </tr>
+  <tr>
+    <td><strong>Target branch</strong></td>
+    <td>调用 <code>run()</code> 时 Host 的当前分支——merge-to-head 策略的合并目标。</td>
+    <td><a href="../../CONTEXT.md">CONTEXT.md</a></td>
+  </tr>
+  <tr>
+    <td><strong>Managed worktree</strong></td>
+    <td>路径在 <code>.sandcastle/worktrees/</code> 下的 worktree，由 Sandcastle 创建和管理。对比"外部 worktree"（用户自己创建的）。</td>
+    <td>代码 L141</td>
+  </tr>
+  <tr>
+    <td><strong>Collision / 碰撞</strong></td>
+    <td>目标分支已被某个 worktree checkout 的情况。Git 禁止同一分支在两个 worktree 同时 checkout。</td>
+    <td>代码 L128</td>
+  </tr>
+  <tr>
+    <td><strong>Fast-forward</strong></td>
+    <td><code>git merge --ff-only</code>——只在本地严格落后于远端时移动 HEAD。不会创建 merge commit，不会覆盖本地工作。</td>
+    <td>ADR 0003</td>
+  </tr>
+  <tr>
+    <td><strong>Orphaned worktree</strong></td>
+    <td><code>.sandcastle/worktrees/</code> 下存在目录，但 <code>git worktree list</code> 中没有对应条目——已被 git 遗忘的残留目录。</td>
+    <td>代码 L153</td>
+  </tr>
+  <tr>
+    <td><strong>NO_CONFIG_LOCK_FLAGS</strong></td>
+    <td><code>-c branch.autoSetupMerge=false -c push.autoSetupRemote=false</code>。防止 <code>git worktree add -b</code> 因用户全局配置而写入 <code>.git/config</code>，避免 lock 竞争。</td>
+    <td>代码 L16</td>
+  </tr>
+  <tr>
+    <td><strong>Effect.gen</strong></td>
+    <td>Effect-TS 的 generator 语法。<code>yield*</code> 等同于 <code>await</code>，用于顺序编排异步操作。</td>
+    <td><a href="https://effect.website/docs/effect/essentials/using-generators">Effect 文档</a></td>
+  </tr>
+  <tr>
+    <td><strong>Effect.async</strong></td>
+    <td>把回调式 API 转成 Effect。<code>resume(Effect.succeed(v))</code> 或 <code>resume(Effect.fail(e))</code>，只调用一次。</td>
+    <td><a href="https://effect.website">Effect 文档</a></td>
+  </tr>
+  <tr>
+    <td><strong>Data.TaggedError</strong></td>
+    <td>Effect 的结构化错误基类。<code>WorktreeError</code> 和 <code>WorktreeTimeoutError</code> 均基于此，通过 <code>_tag</code> 字段实现类型安全的错误匹配。</td>
+    <td>代码 L39, L80 (errors.ts)</td>
+  </tr>
+  <tr>
+    <td><strong>Sandbox provider</strong></td>
+    <td>可插拔的沙箱实现。三种：<code>bind-mount</code>（Docker 挂载）、<code>isolated</code>（远端环境 + sync）、<code>none</code>（直接跑在 host）。由 <code>tag</code> 字段区分。</td>
+    <td><a href="../../CONTEXT.md">CONTEXT.md</a></td>
+  </tr>
+  <tr>
+    <td><strong>acquireUseRelease</strong></td>
+    <td>Effect 的资源管理模式（类似 try-finally）。acquire 获取资源，use 使用它，release <strong>无论成功失败都执行</strong>。SandboxFactory 用双层嵌套管理 worktree（外层）和 sandbox handle（内层）。</td>
+    <td>SandboxFactory L594</td>
+  </tr>
+  <tr>
+    <td><strong>cleanupWorktree</strong></td>
+    <td>release 阶段函数。dirty worktree 保留（打印路径），clean worktree 删除。返回保留路径供 <code>attachPreservedPath</code> 使用。</td>
+    <td>SandboxFactory L203</td>
+  </tr>
+  <tr>
+    <td><strong>attachPreservedPath</strong></td>
+    <td>把保留的 worktree 路径附着到 <code>AgentError</code> / <code>AgentIdleTimeoutError</code> 的 <code>preservedWorktreePath</code> 属性上，让程序化调用方能从错误对象中获取路径。</td>
+    <td>SandboxFactory L232</td>
+  </tr>
+  <tr>
+    <td><strong>resolveGitMounts</strong></td>
+    <td>解析 <code>.git</code> 的挂载需求。普通仓库只挂 <code>.git/</code> 目录；worktree 需额外挂父仓库的 <code>.git/</code>（因为 worktree 的 <code>.git</code> 只是一个 gitdir 指针文件）。</td>
+    <td>SandboxFactory L264</td>
+  </tr>
+</table>
+
+<div class="lesson-footer">
+  <p>📚 <a href="../lessons/0001-architecture-overview.html">第 1 课</a> · <a href="../lessons/0004-sandbox-orchestration.html">第 4 课</a></p>
+</div>
+
+</body>
+</html>

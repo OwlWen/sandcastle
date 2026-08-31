@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 3 课 — 清理层 + 跨平台陷阱 + 完整生命周期</title>
+<link rel="stylesheet" href="../assets/style.css">
+<style>
+/* Lesson 3 specific */
+.lifecycle {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 1.5rem 0;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.lc-step {
+  padding: 0.5rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-align: center;
+  min-width: 5.5rem;
+}
+.lc-arrow {
+  font-size: 1.2rem;
+  color: var(--muted);
+  padding: 0 0.3rem;
+}
+.lc-prune { background: #fef3c7; color: #92400e; }
+.lc-create { background: #fed7aa; color: #9a3412; border: 2px solid var(--accent); }
+.lc-use { background: #dbeafe; color: #1e40af; }
+.lc-check { background: #e0e7ff; color: #3730a3; }
+.lc-remove { background: #fecaca; color: #991b1b; }
+.lc-keep { background: #dcfce7; color: #166534; }
+@media (prefers-color-scheme: dark) {
+  .lc-prune { background: #422006; color: #fcd34d; }
+  .lc-create { background: #431407; color: #fdba74; }
+  .lc-use { background: #1e3a5f; color: #93c5fd; }
+  .lc-check { background: #312e81; color: #a5b4fc; }
+  .lc-remove { background: #450a0a; color: #fca5a5; }
+  .lc-keep { background: #052e16; color: #86efac; }
+}
+
+.path-box {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  background: var(--code-bg);
+  padding: 0.8rem 1rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  margin: 0.8rem 0;
+  line-height: 1.8;
+  overflow-x: auto;
+}
+.path-box .label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  display: block;
+  margin-bottom: 0.2rem;
+}
+.path-box .highlight { color: var(--accent); font-weight: 600; }
+
+.bug-story {
+  margin: 1.2rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--code-bg);
+}
+.bug-story h4 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+  color: var(--danger);
+}
+.bug-story p { font-size: 0.88rem; margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+
+<h1>第 3 课 — 清理层、跨平台陷阱与完整生命周期</h1>
+<p class="lesson-meta">
+  <span>📁 L430 – L539 + 辅助函数</span>
+  <span>📏 ~110 行</span>
+  <span>🎯 理解清理层的三个函数 + Windows 路径标准化 + 模块完整生命周期</span>
+</p>
+
+<p>前两节课我们搞定了 <code>create()</code> 的全部路径。这节课把剩下的清理层一次讲完，再从调用者视角看 worktree 的<strong>完整生命周期</strong>——这样你就能从头到尾读懂整个模块了。</p>
+
+<h2>1. hasUncommittedChanges — 最简单的函数（L434-439）</h2>
+
+<pre><code>export const hasUncommittedChanges = (
+  worktreePath: string,
+): Effect.Effect&lt;boolean, WorktreeError&gt; =&gt;
+  execGit(["status", "--porcelain"], worktreePath).pipe(
+    Effect.map((output) =&gt; output.trim().length &gt; 0),
+  );</code></pre>
+
+<p>6 行代码，零决策分支。但它是整个复用逻辑的<strong>判定器</strong>——<code>create()</code> 和 <code>cleanupWorktree()</code> 都依赖它来决定 dirty vs clean。</p>
+
+<div class="callout info">
+  <strong>porcelain 的含义</strong>：<code>git status --porcelain</code> 输出的是机器可解析的格式（不受 locale 和终端宽度影响）。有输出 = 有变更，没输出 = clean。<br>
+  它覆盖三种变更：unstaged 修改、staged 暂存、untracked 新文件。但<strong>不包括</strong>已提交但未推送的 commit——这些不算 "dirty"（ADR 0003 的定义）。
+</div>
+
+<h2>2. remove — 路径反推的巧妙设计（L447-455）</h2>
+
+<pre><code>export const remove = (
+  worktreePath: string,
+): Effect.Effect&lt;void, WorktreeError&gt; =&gt; {
+  // Derive the main repo dir:
+  // worktreePath = &lt;repoDir&gt;/.sandcastle/worktrees/&lt;name&gt;
+  const repoDir = join(worktreePath, "..", "..", "..");
+  return execGit(["worktree", "remove", "--force", worktreePath], repoDir).pipe(
+    Effect.asVoid,
+  );
+};</code></pre>
+
+<p>9 行代码，但有一个隐含的<strong>契约</strong>：</p>
+
+<div class="callout">
+  <strong>前置条件</strong>：<code>worktreePath</code> 必须是 <code>&lt;repoDir&gt;/.sandcastle/worktrees/&lt;name&gt;</code> 格式。<code>remove()</code> 靠向上走三级目录来反推 <code>repoDir</code>——如果路径结构不对，git 命令的 <code>cwd</code> 就会指向错误的位置。
+</div>
+
+<p>这就是为什么 <code>create()</code> 碰到"外部 worktree"碰撞时直接报错而不尝试复用——如果路径不在 <code>.sandcastle/worktrees/</code> 下，<code>remove()</code> 就没法正确工作。</p>
+
+<div class="path-box">
+  <span class="label">路径反推示例：</span>
+  worktreePath = /home/dev/myrepo/<span class="highlight">.sandcastle</span>/<span class="highlight">worktrees</span>/<span class="highlight">feature-x</span><br>
+  join(worktreePath, "..", "..", "..") = /home/dev/myrepo ← <span class="highlight">repoDir</span>
+</div>
+
+<p>另一个值得注意的点：<code>--force</code> flag。这意味着即使 worktree 有未提交修改也照删——调用者（<code>SandboxFactory.cleanupWorktree</code>、<code>interactive.ts</code>）负责在调用前做 dirty 检查，<code>remove()</code> 本身不做保护。</p>
+
+<h2>3. pruneStale — 最微妙的函数（L461-538）</h2>
+
+<p><code>pruneStale()</code> 做两件不同的清理，顺序很重要：</p>
+
+<table>
+  <tr><th>步骤</th><th>做什么</th><th>为什么</th></tr>
+  <tr>
+    <td><strong>Step 1</strong> (L472)</td>
+    <td><code>git worktree prune</code></td>
+    <td>清理 <strong>git 知道但目录已不存在</strong>的残留元数据（<code>.git/worktrees/&lt;id&gt;/</code>）</td>
+  </tr>
+  <tr>
+    <td><strong>Step 2</strong> (L509-526)</td>
+    <td>扫描并删除孤儿目录</td>
+    <td>清理 <strong>目录还在但 git 已不认识</strong>的残留文件夹</td>
+  </tr>
+</table>
+
+<div class="callout info">
+  <strong>为什么需要两步？</strong><br>
+  这两步处理的是<strong>对称的残留场景</strong>：<br>
+  • 进程崩溃后 <code>rm -rf</code> 清理了目录 → git 元数据残留 → Step 1 解决<br>
+  • <code>git worktree remove</code> 被中断，元数据已清理但目录还在 → Step 2 解决<br>
+  两步一起保证无论哪种残留都能被清理。
+</div>
+
+<h3>Step 2 的逐行拆解</h3>
+
+<pre><code>// L477-485: 读取 .sandcastle/worktrees/ 的目录列表
+const entries: string[] | null = yield* fs.readDirectory(worktreesDir).pipe(
+  Effect.map((es): string[] | null =&gt; es),
+  Effect.catchSome((e) =&gt;                       // ← 只捕获 NotFound
+    e._tag === "SystemError" && e.reason === "NotFound"
+      ? Option.some(Effect.succeed(null as string[] | null))
+      : Option.none(),                           // ← 其他错误继续传播
+  ),
+  Effect.mapError((e) =&gt; new WorktreeError({ message: e.message })),
+);
+
+if (entries === null) return;  // 目录不存在 → 没什么要清理</code></pre>
+
+<p>注意 <code>catchSome</code> 的精确性——只吞 <code>NotFound</code>，权限错误等其他问题仍然会抛出。这比 <code>catchAll</code> 更安全。</p>
+
+<pre><code>// L489-495: 解析符号链接
+const realWorktreesDir = yield* fs
+  .realPath(worktreesDir)
+  .pipe(Effect.catchAll(() =&gt; Effect.succeed(worktreesDir)));</code></pre>
+
+<p>这三行是为了修复一个<strong>真实 bug</strong>：</p>
+
+<div class="bug-story">
+  <h4>🐛 Issue #470 — 符号链接导致活跃 worktree 被误删</h4>
+  <p><strong>场景</strong>：用户把 <code>.sandcastle</code> 配成一个符号链接（指向外部存储）。</p>
+  <p><strong>问题</strong>：<code>fs.readDirectory()</code> 返回的路径基于<em>未解析</em>的符号链接路径（<code>/repo/.sandcastle/worktrees/x</code>），但 <code>git worktree list</code> 返回的是 <code>realpath</code> 后的<em>真实</em>路径（<code>/mnt/ext/.sandcastle/worktrees/x</code>）。两边对不上 → 所有活跃 worktree 看起来都是"孤儿" → 全被删掉。</p>
+  <p><strong>修复</strong>：先 <code>realPath()</code> 解析 worktreesDir，用解析后的路径拼接 entryPath，这样和 git 的输出就能匹配了。</p>
+</div>
+
+<pre><code>// L498-507: 构建活跃 worktree 路径集合
+const worktreeList = yield* execGit(["worktree", "list", "--porcelain"], repoDir);
+const activeWorktreePaths = new Set(
+  worktreeList
+    .split("\n")
+    .filter((line) =&gt; line.startsWith("worktree "))
+    .map((line) =&gt; line.slice("worktree ".length).trim()),
+);</code></pre>
+
+<p>这里直接解析 porcelain 输出而不复用 <code>listWorktrees()</code> 函数——因为 <code>pruneStale</code> 只需要路径，不需要 branch 信息。更简单，更少解析。</p>
+
+<pre><code>// L510-525: 扫描 + 删除孤儿
+for (const entry of entries) {
+  const entryPath = join(realWorktreesDir, entry);  // ← 用 realPath 后的路径
+  const isDir = yield* fs.stat(entryPath).pipe(
+    Effect.map((s) =&gt; s.type === "Directory"),
+    Effect.catchAll(() =&gt; Effect.succeed(false)),   // stat 失败当作非目录
+  );
+  if (isDir && isOrphanedWorktreePath(entryPath, activeWorktreePaths)) {
+    yield* fs.remove(entryPath, { recursive: true, force: true }).pipe(...);
+  }
+}</code></pre>
+
+<p>两个防御性细节：</p>
+<ul>
+  <li><code>stat</code> 失败不抛出——可能是读取瞬间文件被删了（TOCTOU），降级为"不是目录"跳过</li>
+  <li>只删目录不删文件——用户可能在 worktrees 目录下放了其他文件（虽然不推荐）</li>
+</ul>
+
+<h2>4. 跨平台路径标准化——那个你可能忽略的 normalizePath</h2>
+
+<p>整个模块有 <strong>4 个函数</strong>依赖 <code>normalizePath</code>——一个只有一行的函数：</p>
+
+<pre><code>const normalizePath = (p: string): string =&gt; p.replace(/\\/g, "/");</code></pre>
+
+<p>为什么需要它？因为 git 和 Node.js 在 Windows 上对路径分隔符的处理<strong>不一致</strong>：</p>
+
+<div class="path-box">
+  <span class="label">Windows 上同一个路径的两种表示：</span>
+  git worktree list:  C:/<span class="highlight">repo/.sandcastle/worktrees/feature-x</span>  (正斜杠)<br>
+  node:path.join():   C:\<span class="highlight">repo\.sandcastle\worktrees\feature-x</span>  (反斜杠)
+</div>
+
+<p>不标准化就直接比较？永远不匹配。结果：</p>
+
+<table>
+  <tr><th>受影响的函数</th><th>不标准化时的后果</th></tr>
+  <tr>
+    <td><code>findCollidingWorktree()</code></td>
+    <td>mid-rebase 路径 fallback 失败 → 碰撞检测漏网 → git 报奇怪错误</td>
+  </tr>
+  <tr>
+    <td><code>isManagedWorktreePath()</code></td>
+    <td>managed worktree 被误判为 external → 本应复用的场景变成抛错</td>
+  </tr>
+  <tr>
+    <td><code>isOrphanedWorktreePath()</code></td>
+    <td>活跃 worktree 被误判为孤儿 → <strong>数据丢失</strong>（bug #470 的 Windows 变体）</td>
+  </tr>
+  <tr>
+    <td><code>create()</code> 返回值</td>
+    <td>L350: <code>normalize(collision.path)</code> 确保返回平台原生路径，不留 git 的正斜杠给下游</td>
+  </tr>
+</table>
+
+<div class="callout">
+  <strong>设计哲学</strong>：模块内部统一用正斜杠比较（通过 <code>normalizePath</code>），对外返回用 <code>normalize()</code>（Node.js 的原生函数，会转回平台分隔符）。进出口都有"翻译"。
+</div>
+
+<h2>5. 完整生命周期——从调用者视角</h2>
+
+<p>所有调用者都遵循同一个生命周期：</p>
+
+<div class="lifecycle">
+  <span class="lc-step lc-prune">pruneStale()</span>
+  <span class="lc-arrow">→</span>
+  <span class="lc-step lc-create">create()</span>
+  <span class="lc-arrow">→</span>
+  <span class="lc-step lc-use">Agent 执行</span>
+  <span class="lc-arrow">→</span>
+  <span class="lc-step lc-check">hasUncommitted?</span>
+  <span class="lc-arrow">→</span>
+  <span class="lc-step lc-remove">remove()</span>
+  <span class="lc-arrow">/</span>
+  <span class="lc-step lc-keep">保留</span>
+</div>
+
+<p>以 <code>SandboxFactory</code>（最主要的调用者）为例，代码片段如下：</p>
+
+<pre><code>// 1. Prune → Create
+const pruneAndCreate = () =&gt;
+  WorktreeManager.pruneStale(hostRepoDir).pipe(
+    Effect.catchAll((e) =&gt; Effect.sync(() =&gt; {
+      console.error("Warning: failed to prune:", e.message);
+    })),                              // prune 失败不阻塞
+    Effect.andThen(
+      branch
+        ? WorktreeManager.create(hostRepoDir, { branch, baseBranch })
+        : WorktreeManager.create(hostRepoDir, { name }),
+    ),
+  );
+
+// 2. Agent 执行...
+
+// 3. Cleanup: check dirty → remove or preserve
+const cleanupWorktree = (worktreePath, exit) =&gt;
+  WorktreeManager.hasUncommittedChanges(worktreePath).pipe(
+    Effect.catchAll(() =&gt; Effect.succeed(false)),  // 检查失败当 clean
+    Effect.flatMap((isDirty) =&gt; {
+      if (isDirty) {
+        // 保留 worktree，打印路径让用户检查
+        return Effect.succeed(worktreePath);
+      }
+      // Clean → 安全删除
+      return WorktreeManager.remove(worktreePath).pipe(
+        Effect.map(() =&gt; undefined),
+      );
+    }),
+  );</code></pre>
+
+<p>注意几个关键的<strong>容错设计</strong>：</p>
+
+<table>
+  <tr><th>失败点</th><th>处理方式</th><th>为什么</th></tr>
+  <tr>
+    <td><code>pruneStale</code> 失败</td>
+    <td><code>catchAll</code> → 打印警告继续</td>
+    <td>旧残留清理失败不应阻止新 worktree 的创建</td>
+  </tr>
+  <tr>
+    <td><code>hasUncommittedChanges</code> 失败</td>
+    <td><code>catchAll</code> → 当作 clean</td>
+    <td>检查失败时宁可删掉空 worktree，也不要残留占空间</td>
+  </tr>
+  <tr>
+    <td><code>remove</code> 失败</td>
+    <td>不捕获，向上传播</td>
+    <td>如果连删目录都做不到，说明有严重问题，需要用户介入</td>
+  </tr>
+</table>
+
+<h2>6. 你现在能读懂的完整地图</h2>
+
+<p>三节课下来，539 行代码的每一行你都有了心智模型：</p>
+
+<table>
+  <tr><th>区域</th><th>行号</th><th>课程</th><th>掌握程度</th></tr>
+  <tr><td>基础设施层</td><td>L1-71</td><td>第 1 课</td><td>✅ execGit / formatTimestamp / sanitizeName / LC_ALL</td></tr>
+  <tr><td>查询层</td><td>L92-162</td><td>第 2 课</td><td>✅ listWorktrees / findCollidingWorktree / normalizePath</td></tr>
+  <tr><td>维护层</td><td>L213-275</td><td>第 2 课</td><td>✅ fastForwardFromOrigin 的 4 条路径</td></tr>
+  <tr><td>核心层</td><td>L291-428</td><td>第 2 课</td><td>✅ create() 的完整决策树</td></tr>
+  <tr><td>清理层</td><td>L430-539</td><td>第 3 课</td><td>✅ hasUncommittedChanges / remove / pruneStale</td></tr>
+  <tr><td>跨平台</td><td>散布各处</td><td>第 3 课</td><td>✅ normalizePath + normalize + realPath 三层保障</td></tr>
+  <tr><td>调用者生命周期</td><td>外部文件</td><td>第 3 课</td><td>✅ prune → create → use → check → remove/keep</td></tr>
+</table>
+
+<!-- Quiz -->
+<div class="quiz" id="quiz1">
+  <h3>🧪 检验理解</h3>
+  <p><code>pruneStale()</code> 的两步清理顺序能否颠倒——先扫描孤儿目录，再 <code>git worktree prune</code>？</p>
+  <ul class="quiz-options" id="q1-options">
+    <li onclick="checkAnswer(this, false, 'q1')">可以颠倒，两步完全独立互不影响</li>
+    <li onclick="checkAnswer(this, true, 'q1')">不能颠倒，否则 git 会把已删目录的元数据当作 active</li>
+    <li onclick="checkAnswer(this, false, 'q1')">不能颠倒，否则 Step 2 会删掉正在被 git 使用的锁文件</li>
+    <li onclick="checkAnswer(this, false, 'q1')">可以颠倒，但颠倒后需要多调一次 git worktree prune</li>
+  </ul>
+  <div class="quiz-feedback" id="q1-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <h3>🧪 检验理解</h3>
+  <p>为什么 <code>remove()</code> 不接受 <code>repoDir</code> 参数，而是从 <code>worktreePath</code> 反推？</p>
+  <ul class="quiz-options" id="q2-options">
+    <li onclick="checkAnswer(this, false, 'q2')">节省一个参数让函数签名更简洁方便调用</li>
+    <li onclick="checkAnswer(this, true, 'q2')">调用方此时可能没有 repoDir 的上下文只有 worktreePath</li>
+    <li onclick="checkAnswer(this, false, 'q2')">为了避免调用方传错 repoDir 导致删错仓库</li>
+    <li onclick="checkAnswer(this, false, 'q2')">因为 git worktree remove 命令必须从子目录执行</li>
+  </ul>
+  <div class="quiz-feedback" id="q2-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <h3>🧪 检验理解</h3>
+  <p>如果 <code>.sandcastle</code> 是一个符号链接，<code>pruneStale()</code> 不做 <code>realPath()</code> 会导致什么后果？</p>
+  <ul class="quiz-options" id="q3-options">
+    <li onclick="checkAnswer(this, false, 'q3')">git worktree prune 会删除符号链接本身导致配置丢失</li>
+    <li onclick="checkAnswer(this, false, 'q3')">readDirectory 无法读取符号链接目标导致直接抛错退出</li>
+    <li onclick="checkAnswer(this, true, 'q3')">所有活跃 worktree 看起来都是孤儿被全部误删导致数据丢失</li>
+    <li onclick="checkAnswer(this, false, 'q3')">新建 worktree 会被创建到错误的路径导致 Agent 找不到</li>
+  </ul>
+  <div class="quiz-feedback" id="q3-feedback"></div>
+</div>
+
+<script>
+const explanations = {
+  q1: {
+    correct: '✅ 正确！如果先扫描孤儿目录，此时 git 的元数据中可能还记录着"已删目录 X 是一个 active worktree"——尽管它的物理目录已经不在了。Step 2 的 <code>git worktree list</code> 会把这个幽灵条目包含在 active 集合中，导致真正的孤儿目录匹配失败而幸存。先 <code>git worktree prune</code> 清除幽灵元数据，Step 2 的 active 集合才是准确的。',
+    wrong: '❌ 再想想。顺序很重要：<code>git worktree list</code> 的输出取决于 <code>.git/worktrees/</code> 下的元数据。如果元数据中有"幽灵"条目（目录已删但元数据还在），它们会出现在 active 集合中，干扰孤儿检测。'
+  },
+  q2: {
+    correct: '✅ 正确！<code>remove()</code> 在生命周期的"清理阶段"被调用——此时调用方通常持有的是 <code>WorktreeInfo.path</code>（<code>create()</code> 的返回值），不一定还保留着原始的 <code>repoDir</code>。比如 <code>SandboxFactory.cleanupWorktree()</code> 的闭包里只捕获了 <code>worktreePath</code>。路径结构是固定的（<code>.sandcastle/worktrees/&lt;name&gt;</code>），所以反推 repoDir 是可靠的。',
+    wrong: '❌ 再想想。想想 <code>remove()</code> 在生命周期的哪个阶段被调用——它是在 Agent 执行完之后的清理阶段。此时最方便拿到的信息是什么？'
+  },
+  q3: {
+    correct: '✅ 正确！这正是 Issue #470 的根因。<code>join(worktreesDir, entry)</code> 产出的路径基于未解析的符号链接路径，而 <code>git worktree list</code> 返回的是 <code>realpath</code> 后的真实路径。两者永远不匹配 → <code>isOrphanedWorktreePath()</code> 对每个活跃 worktree 都返回 <code>true</code> → 全部被删除。测试 <code>L779-796</code> 专门回归测试了这个场景。',
+    wrong: '❌ 再想想。关键在于 <code>isOrphanedWorktreePath()</code> 比较的是两个路径字符串——一边来自文件系统遍历（未解析符号链接），一边来自 git（已解析符号链接）。如果它们用不同的前缀表示同一个目录……'
+  }
+};
+
+function checkAnswer(el, correct, qid) {
+  const opts = document.querySelectorAll(`#${qid}-options li`);
+  opts.forEach(o => { o.style.pointerEvents = 'none'; });
+  el.classList.add(correct ? 'correct' : 'wrong');
+  const fb = document.getElementById(`${qid}-feedback`);
+  fb.innerHTML = correct ? explanations[qid].correct : explanations[qid].wrong;
+  fb.classList.add('show');
+}
+</script>
+
+<h2>恭喜 🎉</h2>
+
+<p>三节课下来，你已经建立了对 <code>WorktreeManager.ts</code> 全部 539 行代码的完整心智模型：</p>
+
+<ul>
+  <li>🔧 基础设施层的 <code>execGit</code> / <code>LC_ALL</code> / <code>NO_CONFIG_LOCK_FLAGS</code></li>
+  <li>🔍 查询层的 porcelain 解析和碰撞检测双重匹配</li>
+  <li>🏗️ <code>create()</code> 的完整决策树——branch vs 临时、碰撞复用 vs 新建、先试后创降级</li>
+  <li>🔄 <code>fastForwardFromOrigin()</code> 的 4 条路径和 <code>never</code> 错误通道</li>
+  <li>🧹 清理层的两步 prune 和 <code>remove()</code> 的路径反推契约</li>
+  <li>🪟 跨平台 <code>normalizePath</code> + <code>realPath</code> 的三层路径保障</li>
+  <li>🔄 调用者的 prune → create → use → check → remove/keep 生命周期</li>
+</ul>
+
+<div class="callout">
+  <strong>接下来你可以做什么？</strong><br>
+  • 独立给这个模块写测试或修 bug<br>
+  • 阅读 <a href="../../src/createSandbox.ts">createSandbox.ts</a> 或 <a href="../../src/SandboxFactory.ts">SandboxFactory.ts</a> 看调用方如何编排 worktree 生命周期<br>
+  • 深入 <a href="../../docs/adr/0007-worktree-locking.md">ADR 0007</a> 了解并发场景下的文件锁机制<br>
+  • 随时让我帮你讲解 sandcastle 的其他模块！
+</div>
+
+<div class="lesson-footer">
+  <p>📚 <a href="0001-architecture-overview.html">第 1 课</a> · <a href="0002-create-decision-flow.html">第 2 课</a> · <a href="../reference/glossary.html">术语表</a></p>
+  <p>有任何不清楚的地方，随时向你的 AI 导师提问——我就在这里。</p>
+</div>
+
+</body>
+</html>

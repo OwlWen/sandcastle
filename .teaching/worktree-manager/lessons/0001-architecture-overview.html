@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 1 课 — WorktreeManager 全景图：539 行代码里的 5 层架构</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>第 1 课 — WorktreeManager 全景图</h1>
+<p class="lesson-meta">
+  <span>📁 <code>src/WorktreeManager.ts</code></span>
+  <span>📏 539 行</span>
+  <span>🎯 读完后能画出模块的架构地图</span>
+</p>
+
+<p>这节课的目标是建立 <strong>全局心智模型</strong>——不深挖细节，而是搞清楚这 539 行代码在做什么、为什么这样分层、以及每层解决什么问题。</p>
+
+<h2>1. 为什么需要 WorktreeManager？</h2>
+
+<p>Sandcastle 需要让 AI Agent 在一个 <strong>隔离环境</strong> 中编写代码。最直接的隔离方式是 git worktree——让 Agent 在独立的工作目录中操作自己的分支，不打扰开发者的主工作区。</p>
+
+<div class="callout">
+  <strong>关键约束</strong>：Git 不允许同一个分支同时在两个 worktree 中 checkout。这个限制贯穿了整个模块的碰撞检测逻辑。<br>
+  <a href="https://git-scm.com/docs/git-worktree" target="_blank">📖 Git worktree 官方文档</a>
+</div>
+
+<h2>2. 模块的 5 层架构</h2>
+
+<p>从上到下，<code>WorktreeManager.ts</code> 可以看成 5 层：</p>
+
+<div class="layer-diagram">
+  <div class="layer layer-top">🔧 基础设施层 — git 命令执行 + 工具函数</div>
+  <div class="layer layer-mid">🔍 查询层 — 列出 / 检测 worktree 状态</div>
+  <div class="layer layer-focus">🏗️ 核心层 — <code>create()</code> 创建 / 复用 worktree</div>
+  <div class="layer layer-mid">🔄 维护层 — <code>fastForwardFromOrigin()</code> 同步远端</div>
+  <div class="layer layer-bottom">🧹 清理层 — <code>remove()</code> + <code>pruneStale()</code></div>
+</div>
+
+<h3>逐层拆解</h3>
+
+<table>
+  <tr>
+    <th>层</th>
+    <th>行号范围</th>
+    <th>核心函数</th>
+    <th>职责</th>
+  </tr>
+  <tr>
+    <td>🔧 基础设施</td>
+    <td>L1 – L71</td>
+    <td><code>execGit()</code>, <code>formatTimestamp()</code>, <code>sanitizeName()</code>, <code>randomBranchSuffix()</code></td>
+    <td>封装 git 子进程调用；生成分支名和时间戳</td>
+  </tr>
+  <tr>
+    <td>🔍 查询</td>
+    <td>L92 – L162</td>
+    <td><code>getCurrentBranch()</code>, <code>listWorktrees()</code>, <code>findCollidingWorktree()</code>, <code>isManagedWorktreePath()</code>, <code>isOrphanedWorktreePath()</code></td>
+    <td>获取当前分支；解析 worktree 列表；碰撞检测</td>
+  </tr>
+  <tr>
+    <td>🏗️ 核心</td>
+    <td>L291 – L428</td>
+    <td><code>create()</code></td>
+    <td>创建或复用 worktree 的全部决策逻辑</td>
+  </tr>
+  <tr>
+    <td>🔄 维护</td>
+    <td>L213 – L275</td>
+    <td><code>fastForwardFromOrigin()</code></td>
+    <td>从 origin 快进更新已有 worktree</td>
+  </tr>
+  <tr>
+    <td>🧹 清理</td>
+    <td>L430 – L539</td>
+    <td><code>remove()</code>, <code>pruneStale()</code>, <code>hasUncommittedChanges()</code></td>
+    <td>移除单个 worktree；批量清理孤儿目录</td>
+  </tr>
+</table>
+
+<h2>3. 关键设计决策一览</h2>
+
+<p>这个模块背后有两个重要的 <a href="../../docs/adr/0003-reuse-worktree-by-default.md">ADR（架构决策记录）</a>，理解它们是读懂代码的前提：</p>
+
+<h3>ADR 0003：默认复用 worktree</h3>
+<p>当用户重新运行相同命令时，不再报错。而是：</p>
+<table>
+  <tr><th>Worktree 状态</th><th>行为</th><th>代码位置</th></tr>
+  <tr><td>Clean + 落后于 origin</td><td>快进同步 (<code>--ff-only</code>)</td><td><code>fastForwardFromOrigin()</code> L213</td></tr>
+  <tr><td>Clean + 已是最新</td><td>直接复用，打印日志</td><td><code>create()</code> L346</td></tr>
+  <tr><td>Dirty（有未提交修改）</td><td>复用 + 发出警告</td><td><code>create()</code> L341</td></tr>
+  <tr><td>Diverged（有未推送提交）</td><td>保持不动，复用</td><td><code>fastForwardFromOrigin()</code> L256</td></tr>
+</table>
+
+<div class="callout info">
+  <strong>核心原则</strong>：永远不用 <code>git reset --hard</code>。<code>--ff-only</code> 保证只在本地严格落后于远端时才移动 HEAD——不会丢失任何工作。
+</div>
+
+<h3>ADR 0018：分支名需要随机后缀</h3>
+<p><code>generateTempBranchName()</code> 在时间戳后附加 6 字符的随机十六进制后缀。原因：并发调用 <code>run()</code> 或 <code>fork()</code> 可能在同一秒内执行，仅靠秒级时间戳会碰撞。</p>
+
+<pre><code>// L82-89
+export const generateTempBranchName = (name?: string): string => {
+  const ts = formatTimestamp(new Date());
+  const suffix = randomBranchSuffix();  // 3 字节 = 6 位 hex
+  if (name) {
+    return `sandcastle/${sanitizeName(name)}/${ts}-${suffix}`;
+  }
+  return `sandcastle/${ts}-${suffix}`;
+};</code></pre>
+
+<h2>4. Effect-TS 在本模块中的角色</h2>
+
+<p>如果你不熟悉 Effect-TS，只需要理解 3 个模式就能读懂整个模块：</p>
+
+<details>
+  <summary><code>Effect.async</code> — 把 Node.js 回调变成 Effect</summary>
+  <p><code>execGit()</code> 是唯一的 <code>Effect.async</code> 使用点。它把 <code>child_process.execFile</code> 的回调包装成 <code>Effect&lt;string, WorktreeError&gt;</code>：</p>
+<pre><code>const execGit = (args, cwd) =>
+  Effect.async((resume) => {
+    execFile("git", args, { cwd, env }, (error, stdout, stderr) => {
+      if (error) {
+        resume(Effect.fail(new WorktreeError({ ... })));
+      } else {
+        resume(Effect.succeed(stdout));
+      }
+    });
+  });</code></pre>
+  <p>📌 <code>resume</code> 必须且只能调用一次。传入 <code>Effect.succeed</code> 表示成功，<code>Effect.fail</code> 表示失败。</p>
+</details>
+
+<details>
+  <summary><code>Effect.gen</code> — 用 generator 写顺序逻辑</summary>
+  <p><code>create()</code>、<code>fastForwardFromOrigin()</code>、<code>pruneStale()</code> 全部用 <code>Effect.gen(function* () { ... })</code>。<code>yield*</code> 相当于 <code>await</code>——等待一个 Effect 完成：</p>
+<pre><code>Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;  // 获取依赖
+  const existing = yield* listWorktrees(repoDir);  // 等待 git 结果
+  // ... 同步风格的顺序逻辑
+});</code></pre>
+</details>
+
+<details>
+  <summary><code>Effect.catchAll / catchSome / either</code> — 错误处理</summary>
+  <p>三种模式在本模块都有使用：</p>
+  <ul>
+    <li><code>catchAll</code> — 捕获所有错误并转换（L367: <code>invalid reference</code> 时降级为 <code>-b</code> 创建新分支）</li>
+    <li><code>catchSome</code> — 只捕获特定错误（L479: 只处理 <code>NotFound</code>，其他错误继续传播）</li>
+    <li><code>either</code> — 不抛出，返回 <code>Left(error) | Right(value)</code>（L234, L250: fetch/merge 失败时走降级路径而非抛出）</li>
+  </ul>
+</details>
+
+<h2>5. 模块的外部依赖</h2>
+
+<table>
+  <tr><th>依赖</th><th>用途</th></tr>
+  <tr><td><code>effect</code> / <code>@effect/platform</code></td><td>Effect 运行时 + 文件系统抽象</td></tr>
+  <tr><td><code>node:child_process</code></td><td>执行 git 命令</td></tr>
+  <tr><td><code>node:crypto</code></td><td>分支名的随机后缀</td></tr>
+  <tr><td><code>node:path</code></td><td>路径拼接</td></tr>
+  <tr><td><code>./errors.js</code></td><td><code>WorktreeError</code> 和 <code>WorktreeTimeoutError</code> 类型</td></tr>
+</table>
+
+<h2>6. 调用者是谁？</h2>
+
+<p>整个 sandcastle 中有 4 个文件导入 <code>WorktreeManager</code>：</p>
+
+<table>
+  <tr><th>调用者</th><th>用法</th></tr>
+  <tr><td><code>createSandbox.ts</code></td><td>创建沙箱时创建/复用/清理 worktree</td></tr>
+  <tr><td><code>SandboxFactory.ts</code></td><td>工厂模式中协调 worktree 生命周期</td></tr>
+  <tr><td><code>createWorktree.ts</code></td><td>公开的 <code>createWorktree()</code> API</td></tr>
+  <tr><td><code>interactive.ts</code></td><td>交互模式中管理 worktree</td></tr>
+  <tr><td><code>run.ts</code></td><td>仅导入工具函数（<code>generateTempBranchName</code>, <code>getCurrentBranch</code>）</td></tr>
+</table>
+
+<div class="callout">
+  <strong>模式</strong>：所有调用者都遵循相同的三步流程：<code>pruneStale()</code> → <code>create()</code> → 使用 → <code>remove()</code>（或保留 worktree 供下次复用）。
+</div>
+
+<!-- Quiz -->
+<div class="quiz" id="quiz1">
+  <h3>🧪 快速检验</h3>
+  <p>当一个 <strong>clean 且有未推送提交</strong> 的 worktree 被 <code>create()</code> 再次命中时，Sandcastle 会怎么做？</p>
+  <ul class="quiz-options" id="q1-options">
+    <li onclick="checkAnswer(this, false, 'q1')">执行 <code>git reset --hard origin/branch</code> 覆盖本地</li>
+    <li onclick="checkAnswer(this, false, 'q1')">抛出 <code>WorktreeError</code> 拒绝使用该目录</li>
+    <li onclick="checkAnswer(this, true, 'q1')">尝试快进失败后直接复用，保留未推送提交</li>
+    <li onclick="checkAnswer(this, false, 'q1')">删除旧 worktree 后重新创建全新工作目录</li>
+  </ul>
+  <div class="quiz-feedback" id="q1-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <h3>🧪 快速检验</h3>
+  <p><code>NO_CONFIG_LOCK_FLAGS</code> 解决的是什么问题？</p>
+  <ul class="quiz-options" id="q2-options">
+    <li onclick="checkAnswer(this, false, 'q2')">防止 Agent 修改仓库的远端地址配置</li>
+    <li onclick="checkAnswer(this, true, 'q2')">防止 git 写入追踪配置导致 <code>.git/config.lock</code> 竞争</li>
+    <li onclick="checkAnswer(this, false, 'q2')">禁用 worktree 的自动垃圾回收以提升性能</li>
+    <li onclick="checkAnswer(this, false, 'q2')">阻止 git push 操作以保护 origin 分支安全</li>
+  </ul>
+  <div class="quiz-feedback" id="q2-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <h3>🧪 快速检验</h3>
+  <p><code>execGit()</code> 为什么要设置 <code>LC_ALL: "C"</code>？</p>
+  <ul class="quiz-options" id="q3-options">
+    <li onclick="checkAnswer(this, false, 'q3')">让 git 输出更短的错误信息以节省内存空间</li>
+    <li onclick="checkAnswer(this, false, 'q3')">确保 git 使用 UTF-8 编码处理中文文件路径</li>
+    <li onclick="checkAnswer(this, true, 'q3')">强制英文输出，使 stderr 匹配逻辑不受本地化影响</li>
+    <li onclick="checkAnswer(this, false, 'q3')">兼容 Windows 环境下不同的默认字符编码设置</li>
+  </ul>
+  <div class="quiz-feedback" id="q3-feedback"></div>
+</div>
+
+<script>
+const explanations = {
+  q1: {
+    correct: '✅ 正确！<code>fastForwardFromOrigin()</code> 使用 <code>--ff-only</code>，当本地有未推送提交（diverged）时快进会失败，Sandcastle 会打印日志并原样复用 worktree，绝不丢失未推送的工作。见 L256-259。',
+    wrong: '❌ 再想想。Sandcastle 的核心原则是 <strong>永远不破坏用户工作</strong>。有未推送提交的 worktree 属于 diverged 状态，<code>--ff-only</code> 会失败，fallback 是原样复用。'
+  },
+  q2: {
+    correct: '✅ 正确！用户的全局 <code>branch.autoSetupMerge</code> 或 <code>push.autoSetupRemote</code> 配置会让 <code>git worktree add -b</code> 写入上游跟踪配置到 <code>.git/config</code>，与其他进程竞争 <code>.git/config.lock</code>。',
+    wrong: '❌ 再想想。这些 flags（<code>branch.autoSetupMerge=false</code> 和 <code>push.autoSetupRemote=false</code>）是通过 <code>-c</code> 临时覆盖用户配置，防止 git 在创建分支时写入跟踪配置。'
+  },
+  q3: {
+    correct: '✅ 正确！代码在多处通过匹配 stderr 字符串来做控制流（如 L368 的 <code>"invalid reference"</code>）。如果用户系统是非英文 locale，gettext 会翻译这些字符串导致匹配失败。Issue #595。',
+    wrong: '❌ 再想想。关键在于 L49-52 的注释：代码在 <code>catchAll</code> 中匹配 <code>"invalid reference"</code> 等 stderr 字符串，如果 git 输出被本地化翻译了，匹配就会静默失败。'
+  }
+};
+
+function checkAnswer(el, correct, qid) {
+  const opts = document.querySelectorAll(`#${qid}-options li`);
+  opts.forEach(o => { o.style.pointerEvents = 'none'; });
+  el.classList.add(correct ? 'correct' : 'wrong');
+  if (!correct) {
+    opts.forEach(o => { if (!o.classList.contains('wrong')) { /* find correct */ } });
+  }
+  const fb = document.getElementById(`${qid}-feedback`);
+  fb.innerHTML = correct ? explanations[qid].correct : explanations[qid].wrong;
+  fb.classList.add('show');
+  fb.style.background = correct ? 'var(--code-bg)' : 'var(--code-bg)';
+}
+</script>
+
+<h2>下一步</h2>
+
+<p>现在你有了全景地图。下一节课我们会深入 <code>create()</code> 函数的 <strong>决策流程</strong>——这是整个模块最复杂的 138 行代码，包含碰撞检测、分支创建降级、以及 merge-to-head vs branch 策略的分岔逻辑。</p>
+
+<div class="callout info">
+  <strong>推荐阅读</strong>：在下节课之前，建议先读一遍 <a href="../../docs/adr/0003-reuse-worktree-by-default.md">ADR 0003</a>（52 行，5 分钟即可）。它是 <code>create()</code> 函数复用逻辑的设计蓝图。
+</div>
+
+<div class="lesson-footer">
+  <p>📚 <a href="../reference/glossary.html">术语表</a> · <a href="0002-create-decision-flow.html">第 2 课 →</a></p>
+  <p>有任何不清楚的地方，随时向你的 AI 导师提问——我就在这里。</p>
+</div>
+
+</body>
+</html>

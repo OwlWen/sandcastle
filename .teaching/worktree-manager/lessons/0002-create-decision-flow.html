@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 2 课 — create() 的决策流程：一张图读懂 138 行代码</title>
+<link rel="stylesheet" href="../assets/style.css">
+<style>
+/* Lesson 2 specific: flowchart */
+.flowchart {
+  margin: 1.5rem 0;
+  padding: 1.2rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--code-bg);
+  overflow-x: auto;
+}
+.flowchart svg { max-width: 100%; height: auto; }
+
+/* Step-by-step walkthrough */
+.step {
+  margin: 1.5rem 0;
+  padding: 0.8rem 1rem 0.8rem 1.2rem;
+  border-left: 3px solid var(--accent);
+  background: var(--code-bg);
+  border-radius: 0 6px 6px 0;
+}
+.step-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+.step-title { font-weight: 600; font-size: 0.95rem; }
+.step p { margin: 0.3rem 0; font-size: 0.9rem; }
+.step code { font-size: 0.82rem; }
+
+/* Two-column comparison */
+.compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+.compare-col {
+  padding: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--code-bg);
+}
+.compare-col h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  color: var(--accent);
+}
+@media (max-width: 640px) {
+  .compare { grid-template-columns: 1fr; }
+}
+
+/* Edge case cards */
+.edge-case {
+  margin: 0.8rem 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.88rem;
+}
+.edge-case summary { font-weight: 600; }
+.edge-case .scenario { color: var(--muted); font-style: italic; margin: 0.3rem 0; }
+.edge-case .behavior { margin: 0.3rem 0; }
+.edge-case .line-ref { font-size: 0.8rem; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<h1>第 2 课 — <code>create()</code> 的决策流程</h1>
+<p class="lesson-meta">
+  <span>📁 L291 – L428</span>
+  <span>📏 138 行</span>
+  <span>🎯 能画出完整的决策树并解释每个分支</span>
+</p>
+
+<p><code>create()</code> 是整个 <code>WorktreeManager.ts</code> 最复杂的函数。它处理的不只是"创建 worktree"——它要同时应对碰撞检测、分支存在性、复用策略、以及降级路径。这节课用一张决策流程图 + 逐步注解把它拆干净。</p>
+
+<h2>1. 函数签名——先看入口和出口</h2>
+
+<pre><code>export const create = (
+  repoDir: string,
+  opts?: {
+    branch?: string;       // 指定分支名（branch 策略）
+    baseBranch?: string;   // 新建分支时的起点（默认 HEAD）
+    name?: string;         // 给临时分支加一个可读名字
+  },
+): Effect.Effect&lt;
+  WorktreeInfo,                          // 成功：{ path, branch }
+  WorktreeError | WorktreeTimeoutError,  // 失败：两种错误
+  FileSystem.FileSystem                  // 依赖：文件系统服务
+&gt;</code></pre>
+
+<div class="callout info">
+  <strong>读 Effect 签名的技巧</strong>：<code>Effect.Effect&lt;A, E, R&gt;</code> 三个泛型参数分别是：<br>
+  <code>A</code> = 成功值，<code>E</code> = 可能的错误，<code>R</code> = 运行时需要的环境/依赖。<br>
+  这里要求调用方提供 <code>FileSystem.FileSystem</code> 服务——因为函数需要创建目录。
+</div>
+
+<h2>2. 决策流程图</h2>
+
+<p>下面这张图是 <code>create()</code> 的完整决策树。先扫一眼建立全局感觉，再往下逐步走：</p>
+
+<div class="flowchart">
+<pre style="font-size: 0.78rem; line-height: 1.55; background: none; border: none; padding: 0;">
+create(repoDir, opts)
+│
+├─ 1. 确保 .sandcastle/worktrees/ 目录存在
+│
+├─ 2. 计算 branch 和 worktreeName
+│   │
+│   ├─ opts.branch 存在？ ──YES──▶ branch = opts.branch
+│   │                              worktreeName = branch（/ 替换为 -）
+│   │
+│   └─ opts.branch 不存在？
+│       │
+│       ├─ opts.name 存在？──YES──▶ branch = sandcastle/{name}/{ts}-{rand}
+│       │                           worktreeName = sandcastle-{name}-{ts}-{rand}
+│       │
+│       └─ 都不存在 ────────────▶ branch = sandcastle/{ts}-{rand}
+│                                  worktreeName = sandcastle-{ts}-{rand}
+│
+├─ 3. worktreePath = worktreesDir + worktreeName
+│
+╞══════════════════════════════════════════════════════════════════
+│  <strong>分岔点：opts.branch 是否存在？</strong>
+╞══════════════════════════════════════════════════════════════════
+│
+├─ <strong>LEFT: opts.branch 存在（branch 策略）</strong>
+│   │
+│   ├─ 3a. listWorktrees() ──▶ 获取所有现有 worktree
+│   │
+│   ├─ 3b. findCollidingWorktree()
+│   │   │
+│   │   ├─ 无碰撞 ──────────────────────────────────────────┐
+│   │   │                                                    │
+│   │   └─ 有碰撞                                            │
+│   │       │                                                │
+│   │       ├─ isManagedWorktreePath()? ──NO──▶ <span style="color: var(--danger);">❌ 抛错</span>    │
+│   │       │   "Branch already checked out"                 │
+│   │       │                                                │
+│   │       └─ YES（sandcastle 管理的）                       │
+│   │           │                                            │
+│   │           ├─ hasUncommittedChanges()?                   │
+│   │           │   │                                        │
+│   │           │   ├─ dirty ──▶ console.warn + 复用 ──▶ <span style="color: var(--success);">✅ return</span>
+│   │           │   │                                        │
+│   │           │   └─ clean ──▶ fastForwardFromOrigin()      │
+│   │           │               ──▶ <span style="color: var(--success);">✅ return {path, branch}</span>  │
+│   │           │                                            │
+│   │           └───────────────────────── 复用路径结束        │
+│   │                                                        │
+│   ├─ 3c. 新建 worktree（无碰撞时）◀────────────────────────┘
+│   │   │
+│   │   ├─ git worktree add worktreePath branch
+│   │   │   │
+│   │   │   ├─ 成功 ──────────────────────▶ <span style="color: var(--success);">✅ return</span>
+│   │   │   │
+│   │   │   └─ 失败："invalid reference"（分支不存在）
+│   │   │       │
+│   │   │       └─ <strong>降级</strong>：git worktree add <strong>-b</strong> branch worktreePath (baseBranch ?? HEAD)
+│   │   │           ──▶ 创建新分支 ──▶ <span style="color: var(--success);">✅ return</span>
+│   │   │
+│   │   └─ 其他错误 ──▶ <span style="color: var(--danger);">❌ 抛错</span>
+│   │
+│
+├─ <strong>RIGHT: opts.branch 不存在（merge-to-head / 临时分支）</strong>
+│   │
+│   ├─ git worktree add <strong>-b</strong> branch worktreePath HEAD
+│   │   │
+│   │   ├─ 成功 ──▶ <span style="color: var(--success);">✅ return</span>
+│   │   │
+│   │   └─ 失败："already checked out" / "already exists"
+│   │       └─ <span style="color: var(--danger);">❌ 友好错误信息</span>
+│   │
+│   └─ 其他错误 ──▶ <span style="color: var(--danger);">❌ 抛错</span>
+│
+└─ 整体 withTimeout(30s) 包裹
+</pre>
+</div>
+
+<h2>3. 逐步注解走读</h2>
+
+<div class="step">
+  <div class="step-header">
+    <span class="step-num">1</span>
+    <span class="step-title">确保目录存在 (L304-308)</span>
+  </div>
+  <p><code>fs.makeDirectory(worktreesDir, { recursive: true })</code> —— 幂等创建 <code>.sandcastle/worktrees/</code>。</p>
+  <p>注意错误被 <code>mapError</code> 转换为 <code>WorktreeError</code>——这是 Effect 中统一错误类型的标准手法。</p>
+</div>
+
+<div class="step">
+  <div class="step-header">
+    <span class="step-num">2</span>
+    <span class="step-title">计算 branch 和 worktreeName (L310-327)</span>
+  </div>
+  <p>这里有个容易忽略的细节——<code>branch</code> 和 <code>worktreeName</code> 的命名规则不同：</p>
+  <div class="compare">
+    <div class="compare-col">
+      <h4>branch（git 分支名）</h4>
+      <p><code>sandcastle/my-run/20260830-151642-a1b2c3</code></p>
+      <p>用 <code>/</code> 分隔，因为 git 分支名支持斜杠（看起来像目录结构）</p>
+    </div>
+    <div class="compare-col">
+      <h4>worktreeName（目录名）</h4>
+      <p><code>sandcastle-my-run-20260830-151642-a1b2c3</code></p>
+      <p>用 <code>-</code> 分隔，因为目录名不宜包含斜杠</p>
+    </div>
+  </div>
+  <p>当 <code>opts.branch</code> 存在时：<code>worktreeName = branch.replace(/\//g, "-")</code>——简单地把斜杠换成连字符。</p>
+</div>
+
+<div class="step">
+  <div class="step-header">
+    <span class="step-num">3</span>
+    <span class="step-title">核心分岔：有 branch vs 无 branch (L331 / L385)</span>
+  </div>
+  <p>这是整个函数最重要的分岔点。理解它需要回忆<a href="../reference/glossary.html">两种 branch strategy</a>：</p>
+  <div class="compare">
+    <div class="compare-col">
+      <h4>有 opts.branch（branch 策略）</h4>
+      <p>用户指定了分支名 → 可能复用已有 worktree → 需要碰撞检测</p>
+      <p>进入 <strong>复杂路径</strong>（L331-384，54 行）</p>
+    </div>
+    <div class="compare-col">
+      <h4>无 opts.branch（merge-to-head）</h4>
+      <p>生成唯一的临时分支名 → 碰撞概率极低 → 直接创建</p>
+      <p>进入 <strong>简单路径</strong>（L385-413，29 行）</p>
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-header">
+    <span class="step-num">4</span>
+    <span class="step-title">碰撞检测——findCollidingWorktree 的双重匹配 (L335-336)</span>
+  </div>
+  <pre><code>const existing = yield* listWorktrees(repoDir);
+const collision = findCollidingWorktree(existing, branch, worktreePath);</code></pre>
+  <p>为什么要 <strong>两重匹配</strong>（先 branch、再 path）？</p>
+  <p>因为 <strong>mid-rebase</strong> 状态下，worktree 的 HEAD 是 detached 的，<code>git worktree list --porcelain</code> 输出中 <code>branch</code> 字段为 <code>null</code>——按 branch 匹配会漏掉它。fallback 到路径匹配可以兜住这个 case。</p>
+  <div class="callout">
+    <strong>实际场景</strong>：Agent 在 worktree 中执行 <code>git rebase</code>，中途 pause 了。此时分支名对不上，但目录还在 → 路径匹配命中 → 安全复用。
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-header">
+    <span class="step-num">5</span>
+    <span class="step-title">碰撞后的三种命运 (L337-361)</span>
+  </div>
+  <table>
+    <tr><th>条件</th><th>结果</th><th>行号</th></tr>
+    <tr>
+      <td>碰撞 + managed + dirty</td>
+      <td><code>console.warn</code> + 原样复用</td>
+      <td>L341-344</td>
+    </tr>
+    <tr>
+      <td>碰撞 + managed + clean</td>
+      <td><code>fastForwardFromOrigin()</code> + 复用</td>
+      <td>L345-346</td>
+    </tr>
+    <tr>
+      <td>碰撞 + <strong>不是</strong> managed</td>
+      <td>❌ 抛出详细错误信息</td>
+      <td>L352-361</td>
+    </tr>
+  </table>
+  <p>"不是 managed" 意味着分支被 checkout 在主工作树或用户自己创建的外部 worktree 中——Sandcastle 不能动这些，只能报错。</p>
+</div>
+
+<div class="step">
+  <div class="step-header">
+    <span class="step-num">6</span>
+    <span class="step-title">新建 worktree 的"先试后创"降级 (L363-384)</span>
+  </div>
+  <pre><code>yield* execGit(
+  [...NO_CONFIG_LOCK_FLAGS, "worktree", "add", worktreePath, branch],
+  repoDir,
+).pipe(
+  Effect.catchAll((e) => {
+    if (e.message.includes("invalid reference")) {
+      // 分支不存在 → 降级为 -b 创建新分支
+      return execGit([
+        ...NO_CONFIG_LOCK_FLAGS, "worktree", "add", "-b",
+        branch, worktreePath, opts?.baseBranch ?? "HEAD",
+      ], repoDir);
+    }
+    return Effect.fail(e);  // 其他错误原样抛出
+  }),
+);</code></pre>
+  <p>这是一个 <strong>optimistic try → fallback</strong> 模式：</p>
+  <ol>
+    <li>先假设分支已存在，尝试 <code>git worktree add path branch</code>（checkout 现有分支）</li>
+    <li>如果 git 报 <code>"invalid reference"</code>（分支不存在），降级为 <code>-b</code> 创建新分支</li>
+    <li>降级时使用 <code>baseBranch ?? "HEAD"</code> 作为起点</li>
+  </ol>
+  <div class="callout info">
+    <strong>为什么不先 <code>git branch --list</code> 检查再决定？</strong>这是 <a href="https://en.wikipedia.org/wiki/Race_condition">TOCTOU</a> 的经典避免——在检查和操作之间分支状态可能变化。直接尝试 + 按错误降级更安全。
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-header">
+    <span class="step-num">7</span>
+    <span class="step-title">临时分支的简单路径 (L385-413)</span>
+  </div>
+  <p>当没有 <code>opts.branch</code> 时，分支名是唯一的（带时间戳+随机后缀），所以直接 <code>-b</code> 创建新分支 + worktree。碰撞只可能在极端情况下发生（并发 + 随机碰撞），错误信息提示用户等待或换名字。</p>
+</div>
+
+<div class="step">
+  <div class="step-header">
+    <span class="step-num">8</span>
+    <span class="step-title">全局超时守卫 (L417-428)</span>
+  </div>
+  <pre><code>.pipe(
+  withTimeout(WORKTREE_TIMEOUT_MS, () =>  // 30 秒
+    new WorktreeTimeoutError({ ... })
+  ),
+);</code></pre>
+  <p>整个 <code>create()</code> 被 30 秒超时包裹。这防止 git 子进程卡死（比如等待 lock 文件释放）时无限挂起整个 run。</p>
+</div>
+
+<h2>4. fastForwardFromOrigin 深入</h2>
+
+<p>第 5 步中 clean worktree 走的 <code>fastForwardFromOrigin()</code> 本身也有 4 个决策分支：</p>
+
+<table>
+  <tr><th>检查</th><th>条件</th><th>结果</th><th>行号</th></tr>
+  <tr>
+    <td>HEAD 指向</td>
+    <td>HEAD 不在目标分支上（detached / 其他分支）</td>
+    <td>跳过刷新，日志说明原因</td>
+    <td>L221-232</td>
+  </tr>
+  <tr>
+    <td>fetch</td>
+    <td><code>git fetch origin branch</code> 失败（无网络 / 无 origin / 分支不在远端）</td>
+    <td>跳过刷新，非致命</td>
+    <td>L234-244</td>
+  </tr>
+  <tr>
+    <td>merge</td>
+    <td><code>git merge --ff-only origin/branch</code> 失败（diverged）</td>
+    <td>保持原样，未推送提交不丢</td>
+    <td>L250-260</td>
+  </tr>
+  <tr>
+    <td>对比 SHA</td>
+    <td>merge 前后 HEAD SHA 是否变化</td>
+    <td>变了 → "Fast-forwarded"；没变 → "Reusing"</td>
+    <td>L262-274</td>
+  </tr>
+</table>
+
+<div class="callout">
+  <strong>注意返回类型</strong>：<code>Effect.Effect&lt;void, <em>never</em>&gt;</code>——错误通道是 <code>never</code>，意味着这个函数<strong>永远不会失败</strong>。所有错误都在内部用 <code>Effect.either</code> / <code>Effect.orElseSucceed</code> 吞掉了。这是 ADR 0003 "非致命"原则的直接体现。
+</div>
+
+<h2>5. 边缘场景集</h2>
+
+<p>以下 5 个边缘场景在测试中都有覆盖，理解它们能帮助你在脑中"跑"完整个决策树：</p>
+
+<details class="edge-case">
+  <summary>🔸 Mid-rebase 的 clean worktree 不应被快进</summary>
+  <p class="scenario">Agent 在 worktree 中 <code>git rebase --exec false HEAD~2</code> 中途暂停。HEAD 是 detached 的，working tree 是 clean 的。</p>
+  <p class="behavior"><strong>行为</strong>：<code>fastForwardFromOrigin()</code> 检查 <code>symbolic-ref HEAD</code> → 发现不在目标分支 → 跳过刷新。Rebase 状态完好保留。</p>
+  <p class="line-ref">代码: L221-232 · 测试: <code>test L518-578</code></p>
+</details>
+
+<details class="edge-case">
+  <summary>🔸 没有 origin remote 时 fetch 失败不阻塞</summary>
+  <p class="scenario">仓库没配 origin（纯本地 repo）。</p>
+  <p class="behavior"><strong>行为</strong>：<code>Effect.either(execGit(["fetch", ...]))</code> 返回 <code>Left</code> → 打印日志 → 原样复用。绝不抛错。</p>
+  <p class="line-ref">代码: L234-244 · 测试: <code>test L461-483</code></p>
+</details>
+
+<details class="edge-case">
+  <summary>🔸 有未推送提交但 origin 没动（strictly ahead）</summary>
+  <p class="scenario">worktree 有本地 commit，origin 还在旧位置。<code>merge --ff-only</code> 成功（no-op），commit 保留。</p>
+  <p class="behavior"><strong>行为</strong>：merge 成功但 HEAD SHA 没变 → 打印 "Reusing existing worktree"。</p>
+  <p class="line-ref">代码: L266-273 · 测试: <code>test L485-516</code></p>
+</details>
+
+<details class="edge-case">
+  <summary>🔸 分支存在于外部 worktree（非 sandcastle 管理）</summary>
+  <p class="scenario">用户在主工作树中 checkout 了 <code>main</code> 分支，然后调用 <code>create(repoDir, { branch: "main" })</code>。</p>
+  <p class="behavior"><strong>行为</strong>：<code>isManagedWorktreePath()</code> 返回 <code>false</code> → 抛出详细错误信息，解释 git 的单分支互斥限制和解决办法。</p>
+  <p class="line-ref">代码: L352-361 · 测试: <code>test L648-659</code></p>
+</details>
+
+<details class="edge-case">
+  <summary>🔸 <code>baseBranch</code> 在分支已存在时被忽略</summary>
+  <p class="scenario">调用 <code>create(repoDir, { branch: "existing-branch", baseBranch: "some-sha" })</code>，但 <code>existing-branch</code> 已存在。</p>
+  <p class="behavior"><strong>行为</strong>：第一次 <code>git worktree add path branch</code> 就成功了（分支已存在），不走 <code>-b</code> 降级，所以 <code>baseBranch</code> 根本不被使用。</p>
+  <p class="line-ref">代码: L363-364 · 测试: <code>test L328-359</code></p>
+</details>
+
+<!-- Quiz section -->
+<div class="quiz" id="quiz1">
+  <h3>🧪 检验理解</h3>
+  <p>调用 <code>create(repoDir, { branch: "feat/x" })</code> 时，如果 <code>"feat/x"</code> 分支不存在，git 会先报什么错误，然后代码如何降级？</p>
+  <ul class="quiz-options" id="q1-options">
+    <li onclick="checkAnswer(this, false, 'q1')">报 <code>"already exists"</code>，降级为删除旧目录后重建</li>
+    <li onclick="checkAnswer(this, true, 'q1')">报 <code>"invalid reference"</code>，降级为 <code>-b</code> 从 HEAD 新建分支</li>
+    <li onclick="checkAnswer(this, false, 'q1')">报 <code>"not a valid branch"</code>，降级为临时分支名重试</li>
+    <li onclick="checkAnswer(this, false, 'q1')">不报错，<code>git worktree add</code> 会自动创建缺失分支</li>
+  </ul>
+  <div class="quiz-feedback" id="q1-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <h3>🧪 检验理解</h3>
+  <p>为什么 <code>findCollidingWorktree()</code> 需要 <strong>两重匹配</strong>（branch + path），而不是只匹配 branch？</p>
+  <ul class="quiz-options" id="q2-options">
+    <li onclick="checkAnswer(this, false, 'q2')">Windows 上 branch 名可能包含反斜杠导致匹配失败</li>
+    <li onclick="checkAnswer(this, false, 'q2')">git 有时不返回 branch 字段所以需要备用匹配</li>
+    <li onclick="checkAnswer(this, true, 'q2')">mid-rebase 时 HEAD 是 detached 的，branch 为 null</li>
+    <li onclick="checkAnswer(this, false, 'q2')">两个不同分支可能生成相同的 worktreeName 目录</li>
+  </ul>
+  <div class="quiz-feedback" id="q2-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <h3>🧪 检验理解</h3>
+  <p><code>fastForwardFromOrigin()</code> 的返回类型中，错误通道为什么是 <code>never</code>？</p>
+  <ul class="quiz-options" id="q3-options">
+    <li onclick="checkAnswer(this, false, 'q3')">因为 git 操作在这个上下文中不可能失败</li>
+    <li onclick="checkAnswer(this, false, 'q3')">因为 Effect-TS 要求 void 返回的函数不能有错误</li>
+    <li onclick="checkAnswer(this, true, 'q3')">所有错误都被 <code>either</code>/<code>orElseSucceed</code> 内部消化了</li>
+    <li onclick="checkAnswer(this, false, 'q3')">因为外层 <code>create()</code> 已经有超时兜底了</li>
+  </ul>
+  <div class="quiz-feedback" id="q3-feedback"></div>
+</div>
+
+<script>
+const explanations = {
+  q1: {
+    correct: '✅ 正确！<code>git worktree add path branch</code> 在分支不存在时报 <code>"invalid reference"</code>。代码在 <code>catchAll</code> 中匹配这个字符串，降级为 <code>git worktree add -b branch path (baseBranch ?? HEAD)</code> 创建新分支。见 L367-380。',
+    wrong: '❌ 再想想。当 git 找不到指定的分支引用时，它会报 <code>"invalid reference"</code>。代码的降级策略是加上 <code>-b</code> flag 来创建这个分支。'
+  },
+  q2: {
+    correct: '✅ 正确！<code>git rebase</code> 暂停时 HEAD 进入 detached 状态，<code>git worktree list --porcelain</code> 的输出中不会有 <code>branch refs/heads/...</code> 行，所以 <code>WorktreeEntry.branch</code> 为 <code>null</code>——分支匹配必然失败。路径匹配作为 fallback 覆盖这个场景。见 L124-126 注释。',
+    wrong: '❌ 再想想。关键是 <code>WorktreeEntry</code> 接口中 <code>branch</code> 是 <code>string | null</code>——<code>null</code> 代表 detached HEAD。在这种状态下唯一能定位到 worktree 的方式就是匹配路径。'
+  },
+  q3: {
+    correct: '✅ 正确！这是 ADR 0003 "非致命"原则的类型级保证。函数内部用 <code>Effect.either()</code> 把 fetch/merge 的错误转成数据（<code>Left</code>），用 <code>Effect.orElseSucceed()</code> 把其他错误降级为默认值。类型系统保证调用方永远不需要处理这个函数的错误。',
+    wrong: '❌ 再想想。<code>never</code> 在错误通道意味着"不可能出错"——但 git 操作当然可能失败。秘密在于函数内部的 <code>Effect.either()</code> 和 <code>Effect.orElseSucceed()</code> 把所有可能的错误都消化掉了。'
+  }
+};
+
+function checkAnswer(el, correct, qid) {
+  const opts = document.querySelectorAll(`#${qid}-options li`);
+  opts.forEach(o => { o.style.pointerEvents = 'none'; });
+  el.classList.add(correct ? 'correct' : 'wrong');
+  const fb = document.getElementById(`${qid}-feedback`);
+  fb.innerHTML = correct ? explanations[qid].correct : explanations[qid].wrong;
+  fb.classList.add('show');
+}
+</script>
+
+<h2>下一步</h2>
+
+<p>现在你已经能"跑"完 <code>create()</code> 的每一条路径了。下一节课我们会转向 <strong>清理层</strong>——<code>pruneStale()</code> 的孤儿检测逻辑，以及 <code>remove()</code> 如何从路径反推 repoDir。这两个函数虽短但有一些跨平台的微妙细节。</p>
+
+<div class="callout info">
+  <strong>推荐练习</strong>：打开 <a href="../../src/WorktreeManager.test.ts">WorktreeManager.test.ts</a> 的 L163-704，对照今天的决策图，找出每个测试对应决策树的哪条路径。
+</div>
+
+<div class="lesson-footer">
+  <p>📚 <a href="0001-architecture-overview.html">← 第 1 课</a> · <a href="../reference/glossary.html">术语表</a> · <a href="0003-cleanup-layer.html">第 3 课 →</a></p>
+  <p>有任何不清楚的地方，随时向你的 AI 导师提问——我就在这里。</p>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 4 课 — SandboxFactory 如何编排 Worktree 生命周期</title>
+<link rel="stylesheet" href="../assets/style.css">
+<style>
+/* Lesson 4 specific: dispatch matrix */
+.matrix {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.82rem;
+}
+.matrix th, .matrix td {
+  text-align: center;
+  padding: 0.5rem 0.4rem;
+  border: 1px solid var(--border);
+}
+.matrix th { background: var(--code-bg); font-weight: 600; }
+.matrix .yes { background: #dcfce7; color: #166534; }
+.matrix .no  { background: #fef2f2; color: #991b1b; }
+.matrix .na  { background: var(--code-bg); color: var(--muted); }
+@media (prefers-color-scheme: dark) {
+  .matrix .yes { background: #052e16; color: #86efac; }
+  .matrix .no  { background: #450a0a; color: #fca5a5; }
+}
+
+/* Resource management diagram */
+.resource-diagram {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--code-bg);
+  overflow-x: auto;
+}
+.resource-diagram pre {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+/* Concept cards */
+.concept {
+  margin: 1rem 0;
+  padding: 0.8rem 1rem;
+  border-left: 3px solid var(--info);
+  background: var(--code-bg);
+  border-radius: 0 6px 6px 0;
+  font-size: 0.9rem;
+}
+.concept strong { color: var(--accent); }
+
+/* Branch dispatch */
+.dispatch-path {
+  margin: 0.8rem 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.88rem;
+}
+.dispatch-path summary { font-weight: 600; }
+.dispatch-path .line-ref {
+  font-size: 0.78rem;
+  color: var(--muted);
+  float: right;
+}
+</style>
+</head>
+<body>
+
+<h1>第 4 课 — SandboxFactory 如何编排 Worktree</h1>
+<p class="lesson-meta">
+  <span>📁 <code>src/SandboxFactory.ts</code></span>
+  <span>📏 692 行</span>
+  <span>🎯 理解 2×3 调度矩阵 + Effect 资源管理模式 + 错误附着机制</span>
+</p>
+
+<p>前三节课你读懂了 <code>WorktreeManager.ts</code>——它是一个"工具库"，纯粹负责 worktree 的 CRUD。这节课我们往上走一层，看 <code>SandboxFactory</code> 如何<strong>编排</strong>这些工具，把 worktree 生命周期嵌入到 sandbox 启停的完整流程中。</p>
+
+<h2>1. 两个新概念：Sandbox Provider × Branch Strategy</h2>
+
+<p>要读懂 <code>SandboxFactory</code>，必须先理解驱动它的两个维度：</p>
+
+<div class="concept">
+  <strong>Sandbox Provider（沙箱提供者）</strong>——Agent 运行在哪里？<br>
+  三种变体，由 <code>tag</code> 字段区分：
+  <ul style="margin:0.3rem 0; font-size: 0.88rem;">
+    <li><code>"bind-mount"</code> — Docker/Podman 容器，宿主机目录挂载进去（Agent 的写入直接反映在 host）</li>
+    <li><code>"isolated"</code> — Daytona/E2B 等远端环境，有自己的文件系统（需 sync 才能把代码传回 host）</li>
+    <li><code>"none"</code> — 不建容器，Agent 直接跑在宿主机上</li>
+  </ul>
+</div>
+
+<div class="concept">
+  <strong>Branch Strategy（分支策略）</strong>——Agent 的代码修改落在哪个分支？<br>
+  三种变体，由 <code>type</code> 字段区分：
+  <ul style="margin:0.3rem 0; font-size: 0.88rem;">
+    <li><code>"head"</code> — 直接写主工作目录，<strong>不创建 worktree</strong></li>
+    <li><code>"merge-to-head"</code> — 临时分支 → 合并回 HEAD → 删除临时分支（<strong>需要 worktree</strong>）</li>
+    <li><code>"branch"</code> — 用户指定分支名（<strong>需要 worktree</strong>）</li>
+  </ul>
+</div>
+
+<h2>2. 核心洞察：2×3 调度矩阵</h2>
+
+<p><code>SandboxFactory.withSandbox()</code> 的 692 行代码本质上是一个 <strong>2 维调度</strong>。理解了这张矩阵，你就抓住了整个文件的骨架：</p>
+
+<table class="matrix">
+  <tr>
+    <th></th>
+    <th>head 策略</th>
+    <th>merge-to-head / branch 策略</th>
+  </tr>
+  <tr>
+    <th>none 提供者</th>
+    <td class="no">无 worktree<br><span style="font-size:0.75rem">L347-386</span></td>
+    <td class="yes">pruneAndCreate → use → cleanup<br><span style="font-size:0.75rem">L392-456</span></td>
+  </tr>
+  <tr>
+    <th>isolated 提供者</th>
+    <td class="na">N/A（isolated 不支持 head）</td>
+    <td class="yes">pruneAndCreate → use → sync → cleanup<br><span style="font-size:0.75rem">L466-522</span></td>
+  </tr>
+  <tr>
+    <th>bind-mount 提供者</th>
+    <td class="no">无 worktree + git mount<br><span style="font-size:0.75rem">L525-582</span></td>
+    <td class="yes">pruneAndCreate → copy → hook → mount → use → cleanup<br><span style="font-size:0.75rem">L594-686</span></td>
+  </tr>
+</table>
+
+<div class="callout info">
+  <strong>读法</strong>：绿色格子 = 需要 worktree = 调用 <code>WorktreeManager</code>。红色格子 = 不需要 worktree（head 策略直接用主目录）。灰色格子 = 组合不存在（isolated 提供者不能 head，因为远端环境无法直接写主目录）。
+</div>
+
+<p>所有绿色格子的代码结构<strong>高度一致</strong>——只是中间步骤不同。让我们拆开看：</p>
+
+<h2>3. Effect 的 acquireUseRelease——资源管理的核心模式</h2>
+
+<p>每个绿色格子都用了同一个 Effect 模式：<code>Effect.acquireUseRelease</code>。如果你熟悉 try-finally 或 Go 的 defer，它就是 Effect 版的资源管理。</p>
+
+<div class="resource-diagram">
+<pre>
+Effect.acquireUseRelease(
+  <strong>acquire</strong>: pruneAndCreate(),        ──▶ 返回 worktreeInfo
+  <strong>use</strong>:     (worktreeInfo) => { ... },  ──▶ 干活：copy、hook、sandbox、Agent
+  <strong>release</strong>: (worktreeInfo, exit) =>     ──▶ <em>无论成功失败都执行</em>
+            cleanupWorktree(path, exit)
+)
+</pre>
+</div>
+
+<div class="callout">
+  <strong>关键保证</strong>：即使 <code>use</code> 阶段抛出错误（Agent 崩溃、超时、用户取消），<code>release</code> 阶段<strong>一定会执行</strong>。这就是为什么 worktree 清理逻辑放在 release 而不是 use 的末尾——它是一种<strong>结构性保证</strong>，不可能被 early return 或异常跳过。
+</div>
+
+<p>而且 <code>SandboxFactory</code> 用了<strong>嵌套的双层 acquireUseRelease</strong>：</p>
+
+<div class="resource-diagram">
+<pre>
+<strong>外层 acquire/release</strong>: Worktree 生命周期
+│
+├─ acquire: pruneAndCreate()                  → worktreeInfo
+│
+├─ use: ─── copy → hook → ────────────────────────────────────┐
+│                                                              │
+│   <strong>内层 acquire/release</strong>: Sandbox 生命周期                   │
+│   │                                                          │
+│   ├─ acquire: startSandbox(worktreeInfo)     → handle       │
+│   ├─ use:     makeEffect(info, sandbox)      → Agent 执行   │
+│   └─ release: handle.close()                 → 关容器       │
+│                                                              │
+├─ release: cleanupWorktree(path, exit)        → 清理 worktree
+│           ← <em>即使 copy 或 hook 失败也会执行</em>
+</pre>
+</div>
+
+<p>为什么是双层？注释写得很清楚（L590-593）：</p>
+
+<blockquote style="font-size:0.88rem; color: var(--muted); border-left: 2px solid var(--border); padding-left: 0.8rem;">
+  "Worktree creation and sandbox start are nested so the worktree is always cleaned up (outer release) even when a later step — copying, hooks, or sandbox start — fails. The provider handle is closed by the inner release, which only runs once the handle exists."
+</blockquote>
+
+<p>如果只用一层：<code>copy</code> 失败 → sandbox handle 还没创建 → 无法 close → worktree 也不会被清理。双层解决了这个问题。</p>
+
+<h2>4. 四条路径的具体差异</h2>
+
+<p>现在让我们对比四条有 worktree 的路径（绿色格子）在 <code>use</code> 阶段的差异：</p>
+
+<details class="dispatch-path">
+  <summary>none + worktree <span class="line-ref">L392-456</span></summary>
+  <pre><code>pruneAndCreate()
+  → copyToWorktree(...)        // 可选：复制文件到 worktree
+  → runHostHooks(onWorktreeReady)  // 可选：host hook
+  → startSandbox(none provider) // 无容器，直接在 host 跑
+  → makeEffect(info, sandbox)   // Agent 执行
+  → cleanupWorktree(path, exit) // release</code></pre>
+  <p>最简单的 worktree 路径——没有容器、没有 mount、没有 sync。</p>
+</details>
+
+<details class="dispatch-path">
+  <summary>isolated + worktree <span class="line-ref">L466-522</span></summary>
+  <pre><code>pruneAndCreate()
+  → runHostHooks(onWorktreeReady)
+  → startSandbox(isolated provider, copyPaths)  // 启远端环境 + 同步代码进去
+  → makeEffect(info, sandbox)
+  │   info.applyToHost = () => syncOut(...)   // ← 独有：Agent 执行后拉回变更
+  → handle.close()
+  → cleanupWorktree(path, exit)</code></pre>
+  <p>关键差异：<code>SandboxInfo.applyToHost</code> 暴露了一个 <code>syncOut()</code> 函数，让调用方在 Agent 完成后把远端代码变更拉回 host worktree。</p>
+</details>
+
+<details class="dispatch-path">
+  <summary>bind-mount + head <span class="line-ref">L525-582</span></summary>
+  <pre><code>// 无 worktree — 直接用 hostRepoDir
+runHostHooks(onWorktreeReady, hostRepoDir)
+  → resolveGitMounts(hostRepoDir/.git)   // 解析 .git 挂载
+  → patchGitMountsForWindows(...)        // ADR-0006 Windows 修复
+  → startSandbox(bind-mount, gitMounts)  // Docker + 目录挂载
+  → makeEffect(info, sandbox)
+  → handle.close()</code></pre>
+  <p>没有 worktree 也就没有 cleanup。<code>resolveGitMounts</code> 解析 <code>.git</code> 是目录还是文件（worktree 的 .git 是文件，指向父仓库）。</p>
+</details>
+
+<details class="dispatch-path">
+  <summary>bind-mount + worktree（最完整路径）<span class="line-ref">L594-686</span></summary>
+  <pre><code>pruneAndCreate()                          // outer acquire
+  → copyToWorktree(...)                   // 复制额外文件
+  → runHostHooks(onWorktreeReady)         // host hook
+  → resolveGitMounts(hostRepoDir/.git)    // 解析 .git mount
+  → patchGitMountsForWindows(...)         // Windows 兼容
+  → startSandbox(bind-mount, gitMounts)   // inner acquire: Docker
+  → makeEffect(info, sandbox)             // inner use: Agent 执行
+  → handle.close()                        // inner release: 关容器
+  → cleanupWorktree(path, exit)           // outer release: 清理 worktree</code></pre>
+  <p>所有特性全开的"满配"路径。比 none+worktree 多了 mount 解析和 Windows 补丁。</p>
+</details>
+
+<h2>5. cleanupWorktree——清理阶段的完整逻辑</h2>
+
+<pre><code>// L203-226
+const cleanupWorktree = (
+  worktreePath: string,
+  exit: Exit.Exit&lt;unknown, unknown&gt;,   // ← Effect 的退出信号
+): Effect.Effect&lt;string | undefined, WorktreeError&gt; =&gt;
+  WorktreeManager.hasUncommittedChanges(worktreePath).pipe(
+    Effect.catchAll(() =&gt; Effect.succeed(false)),  // 检查失败当 clean
+    Effect.flatMap((isDirty) =&gt; {
+      if (isDirty) {
+        // 保留 worktree，打印路径和清理命令
+        printWorktreePreservedMessage(worktreePath, ...);
+        return Effect.succeed(worktreePath);
+      }
+      if (!Exit.isSuccess(exit)) {
+        console.error("Worktree removed (no uncommitted changes)");
+      }
+      return WorktreeManager.remove(worktreePath).pipe(
+        Effect.map(() =&gt; undefined),
+      );
+    }),
+  );</code></pre>
+
+<p>决策逻辑很清晰：</p>
+
+<table>
+  <tr><th>dirty?</th><th>exit 成功?</th><th>结果</th></tr>
+  <tr><td>✅ dirty</td><td>成功</td><td>保留 + "Run succeeded but worktree has uncommitted changes"</td></tr>
+  <tr><td>✅ dirty</td><td>失败</td><td>保留 + "Worktree preserved at ..."</td></tr>
+  <tr><td>❌ clean</td><td>成功</td><td>静默删除（用户不需要知道）</td></tr>
+  <tr><td>❌ clean</td><td>失败</td><td>删除 + "Worktree removed (no uncommitted changes)"</td></tr>
+</table>
+
+<div class="callout info">
+  <strong>设计意图</strong>：dirty 时保留是为了让用户能 <code>cd</code> 进去检查 Agent 遗留的修改。clean 时删除是为了不让 <code>.sandcastle/worktrees/</code> 堆积垃圾。
+</div>
+
+<h2>6. attachPreservedPath——错误附着机制</h2>
+
+<p>这是一个容易被忽略但很精巧的设计（L232-252）：</p>
+
+<pre><code>const attachPreservedPath = &lt;E&gt;(
+  path: string | undefined,
+  e: E | SandboxError,
+): E | SandboxError =&gt; {
+  if (path !== undefined) {
+    if (e instanceof AgentIdleTimeoutError) {
+      return new AgentIdleTimeoutError({
+        ...e, preservedWorktreePath: path,   // ← 附着到错误对象上
+      });
+    }
+    if (e instanceof AgentError) {
+      return new AgentError({
+        ...e, preservedWorktreePath: path,
+      });
+    }
+  }
+  return e;
+};</code></pre>
+
+<p>问题：<code>cleanupWorktree</code> 在 release 阶段执行，但错误是在 use 阶段抛出的——它们在时间线上是分开的。怎么把 release 阶段的"保留路径"信息传递给已经抛出的错误？</p>
+
+<p>解法：用一个<strong>闭包变量</strong> <code>preservedWorktreePath</code>（L588），在 release 阶段写入，在 <code>.pipe(Effect.mapError(...))</code> 中读取并附着到错误对象上。</p>
+
+<div class="resource-diagram">
+<pre>
+时间线:
+  use 阶段 → Agent 抛出 AgentError ──────┐
+  release 阶段 → cleanupWorktree ─────┐  │
+                                      │  │
+                preservedPath = "/..." │  │
+                                      ▼  ▼
+  .mapError((e) => attachPreservedPath(preservedPath, e))
+                                         │
+                                         ▼
+  调用方拿到: AgentError { preservedWorktreePath: "/..." }
+</pre>
+</div>
+
+<p>这样 <code>run()</code> 的调用方就能从错误对象中拿到保留的 worktree 路径，进行后续处理（比如在 CI 中上传 worktree 作为 artifact）。</p>
+
+<h2>7. resolveGitMounts——worktree 的 .git 特殊处理</h2>
+
+<p>bind-mount 提供者需要把 <code>.git</code> 挂载进容器。但 worktree 的 <code>.git</code> 不是目录，而是一个<strong>文件</strong>：</p>
+
+<div class="resource-diagram">
+<pre>
+普通仓库：  .git/           ← 目录，直接挂载
+Worktree：  .git            ← 文件，内容是 "gitdir: /repo/.git/worktrees/&lt;name&gt;"
+</pre>
+</div>
+
+<p><code>resolveGitMounts()</code>（L264-288）处理这个差异：</p>
+
+<pre><code>// 如果 .git 是目录 → 只挂一个
+if (stat.type === "Directory") {
+  return [{ hostPath: gitPath, sandboxPath: gitPath }];
+}
+
+// 如果 .git 是文件 → 解析 gitdir 指向，挂两个
+const gitdirPath = match[1]!;  // e.g. /repo/.git/worktrees/feature-x
+const parentGitDir = resolve(gitdirPath, "..", "..");  // /repo/.git
+return [
+  { hostPath: gitPath, sandboxPath: gitPath },       // .git 文件本身
+  { hostPath: parentGitDir, sandboxPath: parentGitDir }, // 父 .git 目录
+];</code></pre>
+
+<div class="callout">
+  <strong>为什么要挂父 .git 目录？</strong> 因为 worktree 的 <code>.git</code> 文件只是一个指针。git 操作（commit、log、push）实际读写的是父仓库的 <code>.git/</code> 下的共享数据（objects、refs）。不挂父目录 → 容器内 git 命令全部报错。
+</div>
+
+<!-- Quiz -->
+<div class="quiz" id="quiz1">
+  <h3>🧪 检验理解</h3>
+  <p><code>SandboxFactory</code> 为什么用<strong>双层嵌套</strong>的 <code>acquireUseRelease</code>？</p>
+  <ul class="quiz-options" id="q1-options">
+    <li onclick="checkAnswer(this, false, 'q1')">为了让 worktree 和容器在两个并行的 fiber 中独立管理</li>
+    <li onclick="checkAnswer(this, true, 'q1')">确保 copy/hook 失败时 worktree 仍被清理，即使容器还未创建</li>
+    <li onclick="checkAnswer(this, false, 'q1')">外层管成功路径的清理而内层管失败路径的清理以区分逻辑</li>
+    <li onclick="checkAnswer(this, false, 'q1')">Effect-TS 要求每种资源类型都有独立的 acquire/release 对</li>
+  </ul>
+  <div class="quiz-feedback" id="q1-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <h3>🧪 检验理解</h3>
+  <p>当 Agent 因超时失败且 worktree 有未提交修改时，调用方如何获知保留的 worktree 路径？</p>
+  <ul class="quiz-options" id="q2-options">
+    <li onclick="checkAnswer(this, false, 'q2')">通过 <code>WithSandboxResult.preservedWorktreePath</code> 成功返回值</li>
+    <li onclick="checkAnswer(this, true, 'q2')">通过 <code>AgentIdleTimeoutError.preservedWorktreePath</code> 错误属性</li>
+    <li onclick="checkAnswer(this, false, 'q2')">通过 <code>console.error</code> 输出的文本消息中解析路径字符串</li>
+    <li onclick="checkAnswer(this, false, 'q2')">通过读取 <code>.sandcastle/worktrees/</code> 目录列表推断路径</li>
+  </ul>
+  <div class="quiz-feedback" id="q2-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <h3>🧪 检验理解</h3>
+  <p>为什么 isolated 提供者不支持 <code>head</code> 分支策略？</p>
+  <ul class="quiz-options" id="q3-options">
+    <li onclick="checkAnswer(this, false, 'q3')">因为 isolated 环境没有 git 所以无法操作分支</li>
+    <li onclick="checkAnswer(this, true, 'q3')">因为 isolated 有独立文件系统，无法直接写入 host 的主工作目录</li>
+    <li onclick="checkAnswer(this, false, 'q3')">因为 head 策略不创建 worktree 而 isolated 必须要 sync</li>
+    <li onclick="checkAnswer(this, false, 'q3')">这只是当前的实现限制，未来版本会支持</li>
+  </ul>
+  <div class="quiz-feedback" id="q3-feedback"></div>
+</div>
+
+<script>
+const explanations = {
+  q1: {
+    correct: '✅ 正确！如果只用一层，<code>acquire</code> 创建 worktree，<code>use</code> 里做 copy + hook + startSandbox。如果 copy 失败，<code>release</code> 需要关闭 handle——但 handle 还不存在。双层确保：外层 release 只管 worktree 清理（worktree 一定存在），内层 release 只管 handle 关闭（handle 一定存在）。',
+    wrong: '❌ 再想想。想想如果 <code>copyToWorktree</code> 在 sandbox handle 创建之前就失败了——一层的 release 要同时负责关闭 handle 和清理 worktree，但 handle 还不存在。'
+  },
+  q2: {
+    correct: '✅ 正确！<code>attachPreservedPath()</code> 在 <code>mapError</code> 中把保留路径附着到 <code>AgentIdleTimeoutError</code> 和 <code>AgentError</code> 的 <code>preservedWorktreePath</code> 属性上。调用方 catch 错误后就能直接读取。这比只靠 console 输出可靠得多——程序化的调用方不会去解析 stderr。',
+    wrong: '❌ 再想想。失败时 <code>withSandbox</code> 返回的是错误，不是成功值。路径信息必须附着在错误对象上才能被调用方拿到。'
+  },
+  q3: {
+    correct: '✅ 正确！<code>head</code> 策略意味着 Agent 直接写主工作目录——但 isolated 提供者（Daytona/E2B）有自己的文件系统，跟 host 没有实时同步。Agent 的写入不会出现在 host 上，head 策略就失去了意义。类型系统通过 <code>IsolatedBranchStrategy = MergeToHeadBranchStrategy | NamedBranchStrategy</code>（不含 <code>HeadBranchStrategy</code>）来强制排除。',
+    wrong: '❌ 再想想。<code>head</code> 策略的核心含义是"Agent 的修改直接出现在 host 的主目录中"。如果 Agent 跑在一个完全独立的远端文件系统上……'
+  }
+};
+
+function checkAnswer(el, correct, qid) {
+  const opts = document.querySelectorAll(`#${qid}-options li`);
+  opts.forEach(o => { o.style.pointerEvents = 'none'; });
+  el.classList.add(correct ? 'correct' : 'wrong');
+  const fb = document.getElementById(`${qid}-feedback`);
+  fb.innerHTML = correct ? explanations[qid].correct : explanations[qid].wrong;
+  fb.classList.add('show');
+}
+</script>
+
+<h2>总结：从 WorktreeManager 到 SandboxFactory 的全景</h2>
+
+<pre><code style="font-size:0.78rem; line-height:1.6;">
+┌─────────────────────────────────────────────────────┐
+│  run() / interactive() / createSandbox()            │  ← 用户 API
+├─────────────────────────────────────────────────────┤
+│  SandboxFactory.withSandbox()                       │  ← 编排层（本课）
+│    ┌─ 2×3 调度矩阵                                  │
+│    ├─ 双层 acquireUseRelease（worktree + sandbox）   │
+│    ├─ cleanupWorktree + attachPreservedPath          │
+│    └─ resolveGitMounts + patchGitMountsForWindows    │
+├─────────────────────────────────────────────────────┤
+│  WorktreeManager                                    │  ← 工具层（前三课）
+│    create / remove / pruneStale / hasUncommitted     │
+├─────────────────────────────────────────────────────┤
+│  git CLI (execGit → child_process)                  │  ← 基础设施
+└─────────────────────────────────────────────────────┘
+</code></pre>
+
+<div class="lesson-footer">
+  <p>📚 <a href="0001-architecture-overview.html">第 1 课</a> · <a href="0002-create-decision-flow.html">第 2 课</a> · <a href="0003-cleanup-layer.html">第 3 课</a> · <a href="../reference/glossary.html">术语表</a></p>
+  <p>有任何不清楚的地方，随时向你的 AI 导师提问——我就在这里。</p>
+</div>
+
+</body>
+</html>
