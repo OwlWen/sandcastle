@@ -29,6 +29,7 @@ const codexAgent = getAgent("codex")!;
 const cursorAgent = getAgent("cursor")!;
 const opencodeAgent = getAgent("opencode")!;
 const copilotAgent = getAgent("copilot")!;
+const antigravityAgent = getAgent("antigravity")!;
 
 const defaultOptions: ScaffoldOptions = {
   agent: claudeCodeAgent,
@@ -91,6 +92,12 @@ describe("InitService scaffold", () => {
     {
       agent: cursorAgent,
       expectedKey: "CURSOR_API_KEY=",
+      unexpectedKey: "ANTHROPIC_API_KEY=",
+      expectClaudeSetupTokenHint: false,
+    },
+    {
+      agent: antigravityAgent,
+      expectedKey: "GEMINI_API_KEY=",
       unexpectedKey: "ANTHROPIC_API_KEY=",
       expectClaudeSetupTokenHint: false,
     },
@@ -203,6 +210,7 @@ describe("InitService scaffold", () => {
     cursorAgent,
     opencodeAgent,
     copilotAgent,
+    antigravityAgent,
   ])(
     "$name Dockerfile aligns UID/GID with -o so a host GID colliding with a reserved base-image GID (e.g. macOS staff=20) doesn't fail the build",
     async (agent) => {
@@ -728,7 +736,32 @@ describe("InitService scaffold", () => {
       expect(nonBlank).toContain("CLAUDE_CODE_OAUTH_TOKEN");
     });
 
-    it("non-claude-code agents do not get the `claude setup-token` hint", () => {
+    it("antigravity agent gets dual authentication guidance (Google AI Pro and Gemini API Key) under the env-vars step", () => {
+      const blank = getNextStepsLines(
+        "blank",
+        "main.mts",
+        ghIssues,
+        antigravityAgent,
+        "npm",
+      ).join("\n");
+      const nonBlank = getNextStepsLines(
+        "simple-loop",
+        "main.mts",
+        ghIssues,
+        antigravityAgent,
+        "npm",
+      ).join("\n");
+      expect(blank).toContain("Google AI Pro");
+      expect(blank).toContain("~/.gemini");
+      expect(blank).toContain("GEMINI_API_KEY");
+      expect(blank).toContain("agy");
+      expect(nonBlank).toContain("Google AI Pro");
+      expect(nonBlank).toContain("~/.gemini");
+      expect(nonBlank).toContain("GEMINI_API_KEY");
+      expect(nonBlank).toContain("agy");
+    });
+
+    it("non-claude-code and non-antigravity agents do not get the `claude setup-token` or antigravity hint", () => {
       const piLines = getNextStepsLines(
         "simple-loop",
         "main.mts",
@@ -745,8 +778,10 @@ describe("InitService scaffold", () => {
       ).join("\n");
       expect(piLines).not.toContain("claude setup-token");
       expect(piLines).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
+      expect(piLines).not.toContain("Google AI Pro");
       expect(codexLines).not.toContain("claude setup-token");
       expect(codexLines).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
+      expect(codexLines).not.toContain("Google AI Pro");
     });
 
     it("next steps no longer link to the closed issues/191 workaround", () => {
@@ -870,6 +905,128 @@ describe("InitService scaffold", () => {
     );
     expect(mainTs).toContain('cursor("claude-sonnet-4-6")');
     expect(mainTs).not.toContain("claudeCode");
+  });
+
+  it("scaffolds antigravity agent with antigravity Dockerfile", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: antigravityAgent,
+      model: "gemini-2.5-pro",
+    });
+
+    const dockerfile = await readFile(
+      join(dir, ".sandcastle", "Dockerfile"),
+      "utf-8",
+    );
+    expect(dockerfile).toContain("FROM node:22-bookworm");
+    expect(dockerfile).toContain("npm install -g antigravity-cli");
+    expect(dockerfile).not.toContain("{{ISSUE_TRACKER_TOOLS}}");
+  });
+
+  it("scaffolds antigravity agent with .env.example containing API key URL and dual auth hints", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: antigravityAgent,
+      model: "gemini-2.5-pro",
+    });
+
+    const envExample = await readFile(
+      join(dir, ".sandcastle", ".env.example"),
+      "utf-8",
+    );
+    expect(envExample).toContain("GEMINI_API_KEY=");
+    expect(envExample).toContain("https://aistudio.google.com/app/apikey");
+    expect(envExample).toContain("Google AI Pro credentials via ~/.gemini");
+  });
+
+  it("scaffolds main.mts with antigravity factory import when antigravity agent selected", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: antigravityAgent,
+      model: "gemini-2.5-pro",
+    });
+
+    const mainTs = await readFile(
+      join(dir, ".sandcastle", "main.mts"),
+      "utf-8",
+    );
+    expect(mainTs).toContain(
+      'import { run, antigravity } from "@ai-hero/sandcastle";',
+    );
+    expect(mainTs).toContain('antigravity("gemini-2.5-pro")');
+    expect(mainTs).not.toContain("claudeCode");
+  });
+
+  it("scaffolds main.mts injecting ~/.gemini mounts into docker() when antigravity agent selected", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: antigravityAgent,
+      model: "gemini-2.5-pro",
+    });
+
+    const mainTs = await readFile(
+      join(dir, ".sandcastle", "main.mts"),
+      "utf-8",
+    );
+    expect(mainTs).toContain(
+      'sandbox: docker({ mounts: [{ hostPath: "~/.gemini", sandboxPath: "~/.gemini" }] })',
+    );
+  });
+
+  it("scaffolds main.mts injecting ~/.gemini mounts into podman() when antigravity agent and podman provider selected", async () => {
+    const dir = await makeDir();
+    const podmanProvider = getSandboxProvider("podman")!;
+    await runScaffold(dir, {
+      agent: antigravityAgent,
+      model: "gemini-2.5-pro",
+      sandboxProvider: podmanProvider,
+    });
+
+    const mainTs = await readFile(
+      join(dir, ".sandcastle", "main.mts"),
+      "utf-8",
+    );
+    expect(mainTs).toContain(
+      'import { podman } from "@ai-hero/sandcastle/sandboxes/podman"',
+    );
+    expect(mainTs).toContain(
+      'sandbox: podman({ mounts: [{ hostPath: "~/.gemini", sandboxPath: "~/.gemini" }] })',
+    );
+    expect(mainTs).not.toContain("docker");
+  });
+
+  it("scaffolds multi-sandbox template (parallel-planner) injecting mounts into all provider calls for antigravity", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: antigravityAgent,
+      model: "gemini-2.5-pro",
+      templateName: "parallel-planner",
+    });
+
+    const mainTs = await readFile(
+      join(dir, ".sandcastle", "main.mts"),
+      "utf-8",
+    );
+    expect(mainTs).toContain('antigravity("gemini-2.5-pro")');
+    const matches = mainTs.match(
+      /sandbox: docker\(\{ mounts: \[\{ hostPath: "~\/\.gemini", sandboxPath: "~\/\.gemini" \}\] \}\)/g,
+    );
+    expect(matches).toHaveLength(3);
+  });
+
+  it("does not inject mounts into sandbox provider for non-antigravity agents", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: claudeCodeAgent,
+      model: "claude-opus-4-8",
+    });
+
+    const mainTs = await readFile(
+      join(dir, ".sandcastle", "main.mts"),
+      "utf-8",
+    );
+    expect(mainTs).toContain("sandbox: docker()");
+    expect(mainTs).not.toContain("mounts: [{ hostPath:");
   });
 
   // --- createLabel option ---
@@ -1432,6 +1589,10 @@ describe("InitService scaffold", () => {
       {
         name: "copilot",
         command: `copilot -i "$(cat .sandcastle/SETUP_ISSUE_TRACKER.md)"`,
+      },
+      {
+        name: "antigravity",
+        command: `agy -i "$(cat .sandcastle/SETUP_ISSUE_TRACKER.md)"`,
       },
     ])(
       "$name has the expected interactive setupCommand",

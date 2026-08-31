@@ -3,6 +3,9 @@ import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  antigravity,
+  agy,
+  parseAgyStreamLine,
   claudeCode,
   codex,
   copilot,
@@ -10,6 +13,7 @@ import {
   opencode,
   pi,
 } from "./AgentProvider.js";
+import * as sandcastleIndex from "./index.js";
 import type { AgentCommandOptions } from "./AgentProvider.js";
 import type { BindMountSandboxHandle } from "./SandboxProvider.js";
 
@@ -1954,6 +1958,847 @@ describe("copilot factory", () => {
     expect(provider1.buildPrintCommand(opts("test")).command).not.toContain(
       "model-b",
     );
+  });
+});
+
+describe("antigravity factory", () => {
+  it("returns a provider with name 'antigravity'", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(provider.name).toBe("antigravity");
+  });
+
+  it("agy is an alias for antigravity", () => {
+    expect(agy).toBe(antigravity);
+    const provider = agy("gemini-2.5-pro");
+    expect(provider.name).toBe("antigravity");
+  });
+
+  it("does not expose envManifest or dockerfileTemplate", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(provider).not.toHaveProperty("envManifest");
+    expect(provider).not.toHaveProperty("dockerfileTemplate");
+  });
+
+  it("defaults captureSessions to false", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(provider.captureSessions).toBe(false);
+  });
+
+  it("allows overriding captureSessions in options", () => {
+    const provider = antigravity("gemini-2.5-pro", { captureSessions: true });
+    expect(provider.captureSessions).toBe(true);
+  });
+
+  it("buildPrintCommand includes the model and base flags", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand(opts("do something"));
+    expect(command).toContain("agy --output-format stream-json");
+    expect(command).not.toContain("-p");
+    expect(command).toContain("--model 'gemini-2.5-pro'");
+  });
+
+  it("buildPrintCommand delivers prompt via stdin, not argv", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command, stdin } = provider.buildPrintCommand(opts("do something"));
+    expect(command).not.toContain("-p");
+    expect(command).not.toContain("'do something'");
+    expect(stdin).toBe("do something");
+  });
+
+  it("buildPrintCommand delivers prompt with special characters, quotes, and newlines via stdin unchanged", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const complexPrompt =
+      "Line 1\nLine 2 with 'single' and \"double\" quotes and `backticks` and $ENV_VARS";
+    const { command, stdin } = provider.buildPrintCommand(opts(complexPrompt));
+    expect(command).not.toContain("-p");
+    expect(command).not.toContain(complexPrompt);
+    expect(stdin).toBe(complexPrompt);
+  });
+
+  it("buildPrintCommand keeps command length small even for huge prompts (150KB+)", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const hugePrompt =
+      "diff --git a/foo.ts b/foo.ts\n" + "+ line of code\n".repeat(10000);
+    const { command, stdin } = provider.buildPrintCommand(opts(hugePrompt));
+    expect(command).not.toContain("-p");
+    expect(command.length).toBeLessThan(300);
+    expect(stdin).toBe(hugePrompt);
+  });
+
+  it("buildPrintCommand shell-escapes the model", () => {
+    const provider = antigravity("model'with'quotes");
+    const { command } = provider.buildPrintCommand(opts("do something"));
+    expect(command).toContain("--model 'model'\\''with'\\''quotes'");
+  });
+
+  it("buildPrintCommand includes --dangerously-skip-permissions when true", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand({
+      prompt: "test",
+      dangerouslySkipPermissions: true,
+    });
+    expect(command).toContain("--dangerously-skip-permissions");
+  });
+
+  it("buildPrintCommand omits --dangerously-skip-permissions when false", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand({
+      prompt: "test",
+      dangerouslySkipPermissions: false,
+    });
+    expect(command).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("buildPrintCommand includes --effort when specified", () => {
+    const provider = antigravity("gemini-2.5-pro", { effort: "high" });
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).toContain("--effort high");
+  });
+
+  it("buildPrintCommand omits --effort when not specified", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).not.toContain("--effort");
+  });
+
+  it("supports all effort levels (low, medium, high)", () => {
+    for (const effort of ["low", "medium", "high"] as const) {
+      const provider = antigravity("gemini-2.5-pro", { effort });
+      expect(provider.buildPrintCommand(opts("test")).command).toContain(
+        `--effort ${effort}`,
+      );
+    }
+  });
+
+  it("buildPrintCommand includes --mode when specified", () => {
+    for (const mode of ["accept-edits", "plan"] as const) {
+      const provider = antigravity("gemini-2.5-pro", { mode });
+      expect(provider.buildPrintCommand(opts("test")).command).toContain(
+        `--mode ${mode}`,
+      );
+    }
+  });
+
+  it("buildPrintCommand omits --mode when not specified", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).not.toMatch(/--mode\b/);
+  });
+
+  it("buildPrintCommand includes --agent when specified", () => {
+    const provider = antigravity("gemini-2.5-pro", { agent: "build" });
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).toContain("--agent 'build'");
+  });
+
+  it("buildPrintCommand omits --agent when not specified", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).not.toContain("--agent");
+  });
+
+  it("buildPrintCommand includes --disable-slash-commands when true", () => {
+    const provider = antigravity("gemini-2.5-pro", {
+      disableSlashCommands: true,
+    });
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).toContain("--disable-slash-commands");
+  });
+
+  it("buildPrintCommand omits --disable-slash-commands when false or omitted", () => {
+    const provider = antigravity("gemini-2.5-pro", {
+      disableSlashCommands: false,
+    });
+    expect(provider.buildPrintCommand(opts("test")).command).not.toContain(
+      "--disable-slash-commands",
+    );
+    const provider2 = antigravity("gemini-2.5-pro");
+    expect(provider2.buildPrintCommand(opts("test")).command).not.toContain(
+      "--disable-slash-commands",
+    );
+  });
+
+  it("buildPrintCommand includes --print-timeout when specified", () => {
+    const provider = antigravity("gemini-2.5-pro", {
+      printTimeout: "30m",
+    });
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).toContain("--print-timeout '30m'");
+  });
+
+  it("buildPrintCommand shell-escapes the print-timeout value", () => {
+    const provider = antigravity("gemini-2.5-pro", {
+      printTimeout: "10m; dangerous",
+    });
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).toContain("--print-timeout '10m; dangerous'");
+  });
+
+  it("buildPrintCommand omits --print-timeout when not specified", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).not.toContain("--print-timeout");
+  });
+
+  it("buildPrintCommand includes --conversation when resumeSession is provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command, stdin } = provider.buildPrintCommand({
+      prompt: "test",
+      dangerouslySkipPermissions: true,
+      resumeSession: "session-123",
+    });
+    expect(command).toContain("agy --output-format stream-json");
+    expect(command).not.toContain("-p");
+    expect(command).toContain("--conversation 'session-123'");
+    expect(stdin).toBe("test");
+  });
+
+  it("buildPrintCommand omits --conversation when resumeSession is not provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const { command } = provider.buildPrintCommand(opts("test"));
+    expect(command).not.toContain("--conversation");
+  });
+
+  it("accepts an env option and exposes it on the provider", () => {
+    const provider = antigravity("gemini-2.5-pro", {
+      env: { GEMINI_API_KEY: "test-key" },
+    });
+    expect(provider.env).toEqual({ GEMINI_API_KEY: "test-key" });
+  });
+
+  it("defaults env to empty object when not provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(provider.env).toEqual({});
+  });
+
+  it("bakes model into each provider instance independently", () => {
+    const provider1 = antigravity("model-a");
+    const provider2 = antigravity("model-b");
+    expect(provider1.buildPrintCommand(opts("test")).command).toContain(
+      "model-a",
+    );
+    expect(provider2.buildPrintCommand(opts("test")).command).toContain(
+      "model-b",
+    );
+    expect(provider1.buildPrintCommand(opts("test")).command).not.toContain(
+      "model-b",
+    );
+  });
+
+  // --- buildInteractiveArgs ---
+
+  it("buildInteractiveArgs includes agy binary, --model, and omits prompt flag when prompt is empty", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!({
+      prompt: "",
+      dangerouslySkipPermissions: false,
+    });
+    expect(args).toEqual(["agy", "--model", "gemini-2.5-pro"]);
+  });
+
+  it("buildInteractiveArgs seeds the prompt with -i, not positional or -p", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!(opts("fix the bug"));
+    expect(args[0]).toBe("agy");
+    expect(args).toContain("--model");
+    expect(args).toContain("gemini-2.5-pro");
+    expect(args).toContain("-i");
+    expect(args).not.toContain("-p");
+    // 确保 prompt 紧跟在 -i 标志之后
+    expect(args[args.indexOf("-i") + 1]).toBe("fix the bug");
+  });
+
+  it("buildInteractiveArgs includes --dangerously-skip-permissions when true", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!({
+      prompt: "test",
+      dangerouslySkipPermissions: true,
+    });
+    expect(args).toContain("--dangerously-skip-permissions");
+  });
+
+  it("buildInteractiveArgs omits --dangerously-skip-permissions when false", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!({
+      prompt: "test",
+      dangerouslySkipPermissions: false,
+    });
+    expect(args).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("buildInteractiveArgs includes --effort when effort option is provided", () => {
+    for (const effort of ["low", "medium", "high"] as const) {
+      const provider = antigravity("gemini-2.5-pro", { effort });
+      const args = provider.buildInteractiveArgs!(opts("test"));
+      expect(args).toContain("--effort");
+      expect(args[args.indexOf("--effort") + 1]).toBe(effort);
+    }
+  });
+
+  it("buildInteractiveArgs omits --effort when effort is not provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!(opts("test"));
+    expect(args).not.toContain("--effort");
+  });
+
+  it("buildInteractiveArgs includes --mode when mode option is provided", () => {
+    for (const mode of ["accept-edits", "plan"] as const) {
+      const provider = antigravity("gemini-2.5-pro", { mode });
+      const args = provider.buildInteractiveArgs!(opts("test"));
+      expect(args).toContain("--mode");
+      expect(args[args.indexOf("--mode") + 1]).toBe(mode);
+    }
+  });
+
+  it("buildInteractiveArgs omits --mode when mode is not provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!(opts("test"));
+    expect(args).not.toContain("--mode");
+  });
+
+  it("buildInteractiveArgs includes --agent when agent option is provided", () => {
+    const provider = antigravity("gemini-2.5-pro", { agent: "build" });
+    const args = provider.buildInteractiveArgs!(opts("test"));
+    expect(args).toContain("--agent");
+    expect(args[args.indexOf("--agent") + 1]).toBe("build");
+  });
+
+  it("buildInteractiveArgs omits --agent when agent is not provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!(opts("test"));
+    expect(args).not.toContain("--agent");
+  });
+
+  it("buildInteractiveArgs includes --conversation when resumeSession is provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!({
+      prompt: "test",
+      dangerouslySkipPermissions: true,
+      resumeSession: "session-12345",
+    });
+    expect(args).toContain("--conversation");
+    expect(args[args.indexOf("--conversation") + 1]).toBe("session-12345");
+  });
+
+  it("buildInteractiveArgs omits --conversation when resumeSession is not provided", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const args = provider.buildInteractiveArgs!(opts("test"));
+    expect(args).not.toContain("--conversation");
+  });
+
+  it("agy alias provider also provides identical buildInteractiveArgs", () => {
+    const provider = agy("gemini-2.5-pro", {
+      effort: "high",
+      mode: "accept-edits",
+      agent: "review",
+    });
+    const args = provider.buildInteractiveArgs!({
+      prompt: "run review",
+      dangerouslySkipPermissions: true,
+      resumeSession: "conv-abc",
+    });
+    expect(args).toEqual([
+      "agy",
+      "--model",
+      "gemini-2.5-pro",
+      "--dangerously-skip-permissions",
+      "--effort",
+      "high",
+      "--mode",
+      "accept-edits",
+      "--agent",
+      "review",
+      "--conversation",
+      "conv-abc",
+      "-i",
+      "run review",
+    ]);
+  });
+
+  // --- top-level exports ---
+
+  it("exports antigravity and agy from top-level src/index.ts", () => {
+    expect(sandcastleIndex.antigravity).toBeDefined();
+    expect(sandcastleIndex.antigravity).toBe(antigravity);
+    expect(sandcastleIndex.agy).toBeDefined();
+    expect(sandcastleIndex.agy).toBe(agy);
+  });
+
+  it("parseStreamLine returns empty array for non-JSON lines", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(provider.parseStreamLine("not json")).toEqual([]);
+    expect(provider.parseStreamLine("")).toEqual([]);
+    expect(provider.parseStreamLine("   ")).toEqual([]);
+  });
+
+  it("parseStreamLine returns empty array for malformed JSON", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(provider.parseStreamLine("{bad json")).toEqual([]);
+  });
+
+  it("parseStreamLine extracts session_id from init event with conversation_id", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "init",
+      conversation_id: "conv-12345",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "session_id", sessionId: "conv-12345" },
+    ]);
+  });
+
+  it("parseStreamLine extracts session_id from init event with session_id field", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "init",
+      session_id: "sess-abcde",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "session_id", sessionId: "sess-abcde" },
+    ]);
+  });
+
+  it("parseStreamLine returns empty array for init event without conversation_id", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "init",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([]);
+  });
+
+  it("parseAgyStreamLine can be called directly and behaves identically", () => {
+    const line = JSON.stringify({
+      event: "init",
+      conversation_id: "conv-direct",
+    });
+    expect(parseAgyStreamLine(line)).toEqual([
+      { type: "session_id", sessionId: "conv-direct" },
+    ]);
+  });
+
+  it("parseStreamLine extracts text delta from step_update agent_response event", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_type: "agent_response",
+        text_delta: "Hello Antigravity",
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "text", text: "Hello Antigravity" },
+    ]);
+  });
+
+  it("parseStreamLine extracts text delta from top-level agent_response event", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      step_type: "agent_response",
+      text_delta: "Streaming chunk",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "text", text: "Streaming chunk" },
+    ]);
+  });
+
+  it("parseStreamLine skips agent_response with non-string or missing text_delta", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line1 = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_type: "agent_response",
+      },
+    });
+    expect(provider.parseStreamLine(line1)).toEqual([]);
+
+    const line2 = JSON.stringify({
+      step_type: "agent_response",
+      text_delta: 123,
+    });
+    expect(provider.parseStreamLine(line2)).toEqual([]);
+  });
+
+  it("parseStreamLine extracts tool call for run_command with CommandLine arg", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_type: "tool",
+        tool_name: "run_command",
+        tool_info: {
+          parameters: {
+            CommandLine: "npm test",
+          },
+        },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "tool_call", name: "run_command", args: "npm test" },
+    ]);
+  });
+
+  it("parseStreamLine extracts tool call for view_file with AbsolutePath arg", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_type: "tool",
+        tool_name: "view_file",
+        parameters: {
+          AbsolutePath: "/workspace/src/AgentProvider.ts",
+        },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      {
+        type: "tool_call",
+        name: "view_file",
+        args: "/workspace/src/AgentProvider.ts",
+      },
+    ]);
+  });
+
+  it("parseStreamLine extracts tool call for replace_file_content and write_to_file with TargetFile arg", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const lineReplace = JSON.stringify({
+      step_type: "tool",
+      tool_name: "replace_file_content",
+      tool_info: {
+        parameters: {
+          TargetFile: "/workspace/src/file.ts",
+          Instruction: "fix bug",
+        },
+      },
+    });
+    expect(provider.parseStreamLine(lineReplace)).toEqual([
+      {
+        type: "tool_call",
+        name: "replace_file_content",
+        args: "/workspace/src/file.ts",
+      },
+    ]);
+
+    const lineWrite = JSON.stringify({
+      step_type: "tool",
+      tool_name: "write_to_file",
+      tool_info: {
+        parameters: {
+          TargetFile: "/workspace/src/new.ts",
+        },
+      },
+    });
+    expect(provider.parseStreamLine(lineWrite)).toEqual([
+      {
+        type: "tool_call",
+        name: "write_to_file",
+        args: "/workspace/src/new.ts",
+      },
+    ]);
+  });
+
+  it("parseStreamLine extracts tool call for search_web and grep_search", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const lineSearch = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_type: "tool",
+        tool_name: "search_web",
+        tool_info: {
+          parameters: {
+            query: "effect-ts documentation",
+          },
+        },
+      },
+    });
+    expect(provider.parseStreamLine(lineSearch)).toEqual([
+      {
+        type: "tool_call",
+        name: "search_web",
+        args: "effect-ts documentation",
+      },
+    ]);
+
+    const lineGrep = JSON.stringify({
+      step_type: "tool",
+      tool_name: "grep_search",
+      tool_info: {
+        parameters: {
+          Query: "parseAgyStreamLine",
+        },
+      },
+    });
+    expect(provider.parseStreamLine(lineGrep)).toEqual([
+      {
+        type: "tool_call",
+        name: "grep_search",
+        args: "parseAgyStreamLine",
+      },
+    ]);
+  });
+
+  it("parseStreamLine extracts tool call for read_url_content, list_dir, and send_message", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const lineUrl = JSON.stringify({
+      step_type: "tool",
+      tool_name: "read_url_content",
+      parameters: { Url: "https://example.com/docs" },
+    });
+    expect(provider.parseStreamLine(lineUrl)).toEqual([
+      {
+        type: "tool_call",
+        name: "read_url_content",
+        args: "https://example.com/docs",
+      },
+    ]);
+
+    const lineList = JSON.stringify({
+      step_type: "tool",
+      tool_name: "list_dir",
+      parameters: { DirectoryPath: "/workspace/src" },
+    });
+    expect(provider.parseStreamLine(lineList)).toEqual([
+      {
+        type: "tool_call",
+        name: "list_dir",
+        args: "/workspace/src",
+      },
+    ]);
+
+    const lineMsg = JSON.stringify({
+      step_type: "tool",
+      tool_name: "send_message",
+      parameters: { Message: "Done with task" },
+    });
+    expect(provider.parseStreamLine(lineMsg)).toEqual([
+      {
+        type: "tool_call",
+        name: "send_message",
+        args: "Done with task",
+      },
+    ]);
+  });
+
+  it("parseStreamLine falls back to JSON.stringify(parameters) for unknown tools", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      step_type: "tool",
+      tool_name: "custom_analyzer",
+      tool_info: {
+        parameters: {
+          mode: "deep",
+          count: 5,
+        },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      {
+        type: "tool_call",
+        name: "custom_analyzer",
+        args: '{"mode":"deep","count":5}',
+      },
+    ]);
+  });
+
+  it("parseStreamLine falls back to JSON.stringify(parameters) when known tool lacks white-listed field", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      step_type: "tool",
+      tool_name: "run_command",
+      tool_info: {
+        parameters: {
+          flags: "-la",
+        },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      {
+        type: "tool_call",
+        name: "run_command",
+        args: '{"flags":"-la"}',
+      },
+    ]);
+  });
+
+  it("parseStreamLine skips tool event without tool_name", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      step_type: "tool",
+      tool_info: {
+        parameters: {
+          CommandLine: "npm test",
+        },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([]);
+  });
+
+  it("parseStreamLine extracts result and usage from result event with structured result object", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "result",
+      result: {
+        response: "All tests passed successfully!",
+        usage: {
+          input_tokens: 1500,
+          output_tokens: 300,
+          cache_read_input_tokens: 500,
+          cache_creation_input_tokens: 200,
+        },
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "result", result: "All tests passed successfully!" },
+      {
+        type: "usage",
+        usage: {
+          inputTokens: 1500,
+          cacheCreationInputTokens: 200,
+          cacheReadInputTokens: 500,
+          outputTokens: 300,
+        },
+      },
+    ]);
+  });
+
+  it("parseStreamLine extracts result when result is a string", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "result",
+      result: "Done!",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "result", result: "Done!" },
+    ]);
+  });
+
+  it("parseStreamLine extracts usage from top-level usage field or camelCase fields", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line = JSON.stringify({
+      event: "result",
+      response: "Done with camelCase",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadInputTokens: 20,
+        cacheCreationInputTokens: 10,
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "result", result: "Done with camelCase" },
+      {
+        type: "usage",
+        usage: {
+          inputTokens: 100,
+          cacheCreationInputTokens: 10,
+          cacheReadInputTokens: 20,
+          outputTokens: 50,
+        },
+      },
+    ]);
+  });
+
+  it("parseStreamLine handles result event with missing response or usage gracefully", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    expect(
+      provider.parseStreamLine(JSON.stringify({ event: "result" })),
+    ).toEqual([]);
+    expect(
+      provider.parseStreamLine(JSON.stringify({ event: "result", result: {} })),
+    ).toEqual([]);
+  });
+
+  it("parseStreamLine captures error and agent_error events as result", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const line1 = JSON.stringify({
+      event: "error",
+      error: "Quota exceeded",
+    });
+    expect(provider.parseStreamLine(line1)).toEqual([
+      { type: "result", result: "Quota exceeded" },
+    ]);
+
+    const line2 = JSON.stringify({
+      event: "agent_error",
+      error: { message: "Authentication failed" },
+    });
+    expect(provider.parseStreamLine(line2)).toEqual([
+      { type: "result", result: "Authentication failed" },
+    ]);
+
+    const line3 = JSON.stringify({
+      event: "error",
+      message: "Invalid parameters",
+    });
+    expect(provider.parseStreamLine(line3)).toEqual([
+      { type: "result", result: "Invalid parameters" },
+    ]);
+  });
+
+  it("parseStreamLine end-to-end: streams init, text deltas, tool calls, and final result with usage", () => {
+    const provider = antigravity("gemini-2.5-pro");
+    const streamLines = [
+      JSON.stringify({
+        event: "init",
+        conversation_id: "conv-agy-987",
+      }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_type: "agent_response",
+          text_delta: "I will check the files.",
+        },
+      }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_info: {
+            parameters: { CommandLine: "ls -la" },
+          },
+        },
+      }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_type: "agent_response",
+          text_delta: " All done.",
+        },
+      }),
+      JSON.stringify({
+        event: "result",
+        result: {
+          response: "I will check the files. All done.",
+          usage: {
+            input_tokens: 1200,
+            output_tokens: 250,
+            cache_read_input_tokens: 400,
+            cache_creation_input_tokens: 100,
+          },
+        },
+      }),
+    ];
+
+    const allEvents = streamLines.flatMap((line) =>
+      provider.parseStreamLine(line),
+    );
+
+    expect(allEvents).toEqual([
+      { type: "session_id", sessionId: "conv-agy-987" },
+      { type: "text", text: "I will check the files." },
+      { type: "tool_call", name: "run_command", args: "ls -la" },
+      { type: "text", text: " All done." },
+      { type: "result", result: "I will check the files. All done." },
+      {
+        type: "usage",
+        usage: {
+          inputTokens: 1200,
+          cacheCreationInputTokens: 100,
+          cacheReadInputTokens: 400,
+          outputTokens: 250,
+        },
+      },
+    ]);
   });
 });
 

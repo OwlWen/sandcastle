@@ -189,12 +189,20 @@ export const hostHasDependency = (
 
 export interface AgentEntry {
   readonly name: string;
+  readonly aliases?: readonly string[];
   readonly label: string;
   readonly defaultModel: string;
   readonly factoryImport: string;
   readonly dockerfileTemplate: string;
   /** Lines to include in the generated `.env.example` for this agent's API key. */
   readonly envExample: string;
+  /** Optional hint printed in next steps under the env vars step. */
+  readonly envHint?: string;
+  /** Optional host directories to bind-mount in scaffolded sandbox configurations. */
+  readonly scaffoldMounts?: readonly {
+    readonly hostPath: string;
+    readonly sandboxPath: string;
+  }[];
   /**
    * Copy-pasteable interactive command that feeds the custom-issue-tracker
    * setup prompt to this agent's CLI on the host. Printed in init's next steps
@@ -406,6 +414,41 @@ WORKDIR /home/agent
 ENTRYPOINT ["sleep", "infinity"]
 `;
 
+const ANTIGRAVITY_DOCKERFILE = `FROM node:22-bookworm
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \\
+  git \\
+  curl \\
+  jq \\
+  && rm -rf /var/lib/apt/lists/*
+
+{{ISSUE_TRACKER_TOOLS}}
+
+# Build-args for UID/GID alignment: sandcastle docker build-image
+# defaults these to the host user's UID/GID so image-built files
+# and bind-mounted files share an owner without runtime chown.
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
+
+# Rename the base image's "node" user to "agent" and align UID/GID.
+RUN groupmod -o -g $AGENT_GID node && usermod -o -u $AGENT_UID -g $AGENT_GID -d /home/agent -m -l agent node
+USER \${AGENT_UID}:\${AGENT_GID}
+
+# Install Antigravity CLI
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
+
+# Add Antigravity to PATH
+ENV PATH="/home/agent/.local/bin:$PATH"
+
+WORKDIR /home/agent
+
+# In worktree sandbox mode, Sandcastle bind-mounts the git worktree at \${SANDBOX_REPO_DIR}
+# and overrides the working directory to \${SANDBOX_REPO_DIR} at container start.
+# Structure your Dockerfile so that \${SANDBOX_REPO_DIR} can serve as the project root.
+ENTRYPOINT ["sleep", "infinity"]
+`;
+
 const AGENT_REGISTRY: AgentEntry[] = [
   {
     name: "claude-code",
@@ -418,6 +461,8 @@ const AGENT_REGISTRY: AgentEntry[] = [
 CLAUDE_CODE_OAUTH_TOKEN=
 # Or use an Anthropic API key instead — uncomment and fill in:
 # ANTHROPIC_API_KEY=`,
+    envHint:
+      "   To use your Claude subscription instead of an API key, run `claude setup-token` on your host and paste the result into CLAUDE_CODE_OAUTH_TOKEN.",
     setupCommand: `claude "$(cat ${SETUP_ISSUE_TRACKER_PATH})"`,
   },
   {
@@ -472,6 +517,21 @@ OPENCODE_API_KEY=`,
 # COPILOT_GITHUB_TOKEN takes precedence over GH_TOKEN and GITHUB_TOKEN.
 GITHUB_TOKEN=`,
     setupCommand: `copilot -i "$(cat ${SETUP_ISSUE_TRACKER_PATH})"`,
+  },
+  {
+    name: "antigravity",
+    aliases: ["agy"],
+    label: "Google Antigravity",
+    defaultModel: "gemini-2.5-pro",
+    factoryImport: "antigravity",
+    dockerfileTemplate: ANTIGRAVITY_DOCKERFILE,
+    envExample: `# Gemini API key (get one from https://aistudio.google.com/app/apikey)
+# Or mount Google AI Pro credentials via ~/.gemini
+GEMINI_API_KEY=`,
+    envHint:
+      "   To use your Google AI Pro subscription instead of an API key, log in with `agy` on your host (credentials in ~/.gemini are mounted automatically). Otherwise, set GEMINI_API_KEY in .sandcastle/.env.",
+    scaffoldMounts: [{ hostPath: "~/.gemini", sandboxPath: "~/.gemini" }],
+    setupCommand: `agy -i "$(cat ${SETUP_ISSUE_TRACKER_PATH})"`,
   },
 ];
 
@@ -577,7 +637,7 @@ export const getIssueTracker = (name: string): IssueTrackerEntry | undefined =>
   ISSUE_TRACKER_REGISTRY.find((b) => b.name === name);
 
 export const getAgent = (name: string): AgentEntry | undefined =>
-  AGENT_REGISTRY.find((a) => a.name === name);
+  AGENT_REGISTRY.find((a) => a.name === name || a.aliases?.includes(name));
 
 // ---------------------------------------------------------------------------
 // Sandbox provider registry (internal — not part of public API)
@@ -645,10 +705,8 @@ export function getNextStepsLines(
       "Next steps:",
       `1. Set the required env vars in .sandcastle/.env (see .sandcastle/.env.example)`,
     ];
-    if (agent.name === "claude-code") {
-      lines.push(
-        "   To use your Claude subscription instead of an API key, run `claude setup-token` on your host and paste the result into CLAUDE_CODE_OAUTH_TOKEN.",
-      );
+    if (agent.envHint) {
+      lines.push(agent.envHint);
     }
     lines.push(
       "2. Read and customize .sandcastle/prompt.md to describe what you want the agent to do",
@@ -665,10 +723,8 @@ export function getNextStepsLines(
       "Next steps:",
       `${step++}. Set the required env vars in .sandcastle/.env (see .sandcastle/.env.example)`,
     ];
-    if (agent.name === "claude-code") {
-      lines.push(
-        "   To use your Claude subscription instead of an API key, run `claude setup-token` on your host and paste the result into CLAUDE_CODE_OAUTH_TOKEN.",
-      );
+    if (agent.envHint) {
+      lines.push(agent.envHint);
     }
     lines.push(
       `${step++}. Add "sandcastle": "npx tsx .sandcastle/${mainFilename}" to your package.json scripts`,
@@ -808,6 +864,20 @@ const rewriteMainTs = (
     // the import subpath, and every factory call site — and is a no-op when
     // docker is selected.
     content = content.replace(/\bdocker\b/g, sandboxProvider.name);
+
+    if (agent.scaffoldMounts && agent.scaffoldMounts.length > 0) {
+      const formattedMounts = agent.scaffoldMounts
+        .map(
+          (m) =>
+            `{ hostPath: "${m.hostPath}", sandboxPath: "${m.sandboxPath}" }`,
+        )
+        .join(", ");
+      const sandboxCallRe = new RegExp(`\\b${sandboxProvider.name}\\(\\)`, "g");
+      content = content.replace(
+        sandboxCallRe,
+        `${sandboxProvider.name}({ mounts: [${formattedMounts}] })`,
+      );
+    }
 
     yield* fs
       .writeFileString(mainTsPath, content)

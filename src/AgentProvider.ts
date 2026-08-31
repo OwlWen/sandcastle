@@ -1265,3 +1265,278 @@ export const claudeCode = (
     return undefined;
   },
 });
+
+// ---------------------------------------------------------------------------
+// Google Antigravity CLI (agy) agent provider
+// ---------------------------------------------------------------------------
+
+/** Options for the Google Antigravity CLI agent provider. */
+export interface AntigravityOptions {
+  /** Reasoning effort for the session ("low" | "medium" | "high"). Maps to the CLI's --effort flag. */
+  readonly effort?: "low" | "medium" | "high";
+  /** Execution mode for the session ("accept-edits" | "plan"). Maps to the CLI's --mode flag. */
+  readonly mode?: "accept-edits" | "plan";
+  /** Named Antigravity subagent to run. Maps to the CLI's --agent flag. */
+  readonly agent?: string;
+  /** When true, disables slash commands and skill expansion in print mode. Maps to the CLI's --disable-slash-commands flag. */
+  readonly disableSlashCommands?: boolean;
+  /** Timeout for print mode wait (e.g. "10m", "30m", "1h"). Maps to the CLI's --print-timeout flag. */
+  readonly printTimeout?: string;
+  /** Environment variables injected by this agent provider. */
+  readonly env?: Record<string, string>;
+  /** When true, session capture is enabled for this provider. Default: false. */
+  readonly captureSessions?: boolean;
+}
+
+/** 将允许的 Antigravity 工具名称映射至按优先级排列的候选参数字段列表 */
+const AGY_TOOL_ARG_FIELDS: Record<string, string[]> = {
+  run_command: ["CommandLine", "command", "cmd"],
+  view_file: ["AbsolutePath", "TargetFile", "path", "file"],
+  replace_file_content: ["TargetFile", "AbsolutePath", "path", "file"],
+  write_to_file: ["TargetFile", "AbsolutePath", "path", "file"],
+  grep_search: ["Query", "query", "pattern"],
+  search_web: ["query", "Query"],
+  read_url_content: ["Url", "url"],
+  list_dir: ["DirectoryPath", "path"],
+  send_message: ["Message", "message"],
+  ask_question: ["question", "questions"],
+  Bash: ["command", "CommandLine"],
+  bash: ["command", "CommandLine"],
+};
+
+/** 提取工具调用的主要参数展示字符串，未命中白名单时回退至 JSON 序列化 */
+const extractAgyToolArgs = (toolName: string, parameters: unknown): string => {
+  if (typeof parameters === "string") return parameters;
+  if (typeof parameters !== "object" || parameters === null) return "{}";
+
+  const fields = AGY_TOOL_ARG_FIELDS[toolName];
+  if (fields !== undefined) {
+    const record = parameters as Record<string, unknown>;
+    for (const field of fields) {
+      const val = record[field];
+      if (typeof val === "string") {
+        return val;
+      }
+    }
+  }
+  return JSON.stringify(parameters);
+};
+
+/** 将 Antigravity 响应的 usage 对象映射为标准 IterationUsage 结构 */
+const parseAgyUsage = (usage: unknown): IterationUsage | undefined => {
+  if (typeof usage !== "object" || usage === null) return undefined;
+  const u = usage as Record<string, unknown>;
+
+  const getNum = (k1: string, k2: string): number | undefined => {
+    const v = u[k1] ?? u[k2];
+    return typeof v === "number" ? v : undefined;
+  };
+
+  const inputTokens = getNum("input_tokens", "inputTokens");
+  const outputTokens = getNum("output_tokens", "outputTokens");
+  const cacheReadInputTokens =
+    getNum("cache_read_input_tokens", "cacheReadInputTokens") ?? 0;
+  const cacheCreationInputTokens =
+    getNum("cache_creation_input_tokens", "cacheCreationInputTokens") ?? 0;
+
+  if (inputTokens === undefined && outputTokens === undefined) {
+    return undefined;
+  }
+
+  return {
+    inputTokens: inputTokens ?? 0,
+    cacheCreationInputTokens,
+    cacheReadInputTokens,
+    outputTokens: outputTokens ?? 0,
+  };
+};
+
+/**
+ * 解析来自 `agy --output-format stream-json` 的单行 JSONL 输出并转换为标准流式事件列表。
+ */
+export const parseAgyStreamLine = (line: string): ParsedStreamEvent[] => {
+  const trimmed = line.trimStart();
+  if (!trimmed.startsWith("{")) return [];
+  try {
+    const obj = JSON.parse(trimmed);
+
+    // init / session 事件：提取会话 ID (conversation_id / session_id)
+    if (
+      obj.event === "init" ||
+      obj.type === "init" ||
+      obj.event === "session"
+    ) {
+      const sessionId =
+        obj.conversation_id ??
+        obj.conversationId ??
+        obj.session_id ??
+        obj.sessionId ??
+        obj.id;
+      if (typeof sessionId === "string" && sessionId.length > 0) {
+        return [{ type: "session_id", sessionId }];
+      }
+      return [];
+    }
+
+    // agent_response 步骤更新：提取流式文本增量 (text_delta)
+    const stepType =
+      obj.step_update?.step_type ??
+      obj.step_type ??
+      (obj.event === "agent_response" ? "agent_response" : undefined);
+    if (stepType === "agent_response") {
+      const textDelta =
+        obj.step_update?.text_delta ??
+        obj.text_delta ??
+        obj.step_update?.delta ??
+        obj.delta ??
+        obj.step_update?.text ??
+        obj.text;
+      if (typeof textDelta === "string" && textDelta.length > 0) {
+        return [{ type: "text", text: textDelta }];
+      }
+      return [];
+    }
+
+    // tool 步骤更新：提取工具调用及白名单参数
+    if (stepType === "tool" || obj.event === "tool") {
+      const toolName =
+        obj.step_update?.tool_name ??
+        obj.step_update?.name ??
+        obj.step_update?.toolName ??
+        obj.tool_name ??
+        obj.toolName ??
+        obj.name;
+      if (typeof toolName !== "string" || toolName.length === 0) {
+        return [];
+      }
+      const parameters =
+        obj.step_update?.tool_info?.parameters ??
+        obj.step_update?.parameters ??
+        obj.tool_info?.parameters ??
+        obj.parameters ??
+        obj.args ??
+        obj.input ??
+        {};
+      const args = extractAgyToolArgs(toolName, parameters);
+      return [{ type: "tool_call", name: toolName, args }];
+    }
+
+    // result 事件：提取最终响应文本与 Token 统计
+    if (obj.event === "result" || obj.type === "result") {
+      const events: ParsedStreamEvent[] = [];
+      const resultText =
+        typeof obj.result === "string"
+          ? obj.result
+          : typeof obj.result?.response === "string"
+            ? obj.result.response
+            : typeof obj.response === "string"
+              ? obj.response
+              : undefined;
+      if (typeof resultText === "string") {
+        events.push({ type: "result", result: resultText });
+      }
+
+      const usageRaw = obj.result?.usage ?? obj.usage;
+      const usage = parseAgyUsage(usageRaw);
+      if (usage !== undefined) {
+        events.push({ type: "usage", usage });
+      }
+      return events;
+    }
+
+    // 将 error / agent_error 转换为 result 事件以供上层容错
+    if (
+      obj.event === "error" ||
+      obj.type === "error" ||
+      obj.event === "agent_error" ||
+      obj.type === "agent_error"
+    ) {
+      const msg = extractErrorMessage(obj);
+      return msg ? [{ type: "result", result: msg }] : [];
+    }
+  } catch {
+    // 忽略无效或畸形 JSON 数据
+  }
+  return [];
+};
+
+/**
+ * 创建 Google Antigravity CLI (agy) 专用的 Agent Provider。
+ *
+ * @param model 模型名称（如 "gemini-2.5-pro"）。
+ * @param options Antigravity 配置选项（包含 reasoning effort、mode、agent 及环境变量等）。
+ */
+export const antigravity = (
+  model: string,
+  options?: AntigravityOptions,
+): AgentProvider => ({
+  name: "antigravity",
+  env: options?.env ?? {},
+  captureSessions: options?.captureSessions ?? false,
+
+  buildPrintCommand({
+    prompt,
+    dangerouslySkipPermissions,
+    resumeSession,
+  }: AgentCommandOptions): PrintCommand {
+    const permissionsFlag = dangerouslySkipPermissions
+      ? " --dangerously-skip-permissions"
+      : "";
+    const effortFlag = options?.effort ? ` --effort ${options.effort}` : "";
+    const modeFlag = options?.mode ? ` --mode ${options.mode}` : "";
+    const agentFlag = options?.agent
+      ? ` --agent ${shellEscape(options.agent)}`
+      : "";
+    const disableSlashCommandsFlag = options?.disableSlashCommands
+      ? " --disable-slash-commands"
+      : "";
+    const printTimeoutFlag = options?.printTimeout
+      ? ` --print-timeout ${shellEscape(options.printTimeout)}`
+      : "";
+    const resumeFlag = resumeSession
+      ? ` --conversation ${shellEscape(resumeSession)}`
+      : "";
+
+    return {
+      command: `agy --output-format stream-json --model ${shellEscape(model)}${permissionsFlag}${effortFlag}${modeFlag}${agentFlag}${disableSlashCommandsFlag}${printTimeoutFlag}${resumeFlag}`,
+      stdin: prompt,
+    };
+  },
+
+  buildInteractiveArgs({
+    prompt,
+    dangerouslySkipPermissions,
+    resumeSession,
+  }: AgentCommandOptions): string[] {
+    const args = ["agy", "--model", model];
+    if (dangerouslySkipPermissions) {
+      args.push("--dangerously-skip-permissions");
+    }
+    if (options?.effort) {
+      args.push("--effort", options.effort);
+    }
+    if (options?.mode) {
+      args.push("--mode", options.mode);
+    }
+    if (options?.agent) {
+      args.push("--agent", options.agent);
+    }
+    if (resumeSession) {
+      args.push("--conversation", resumeSession);
+    }
+    // 交互模式下通过 `-i`/`--prompt-interactive` 预填并自动执行提示词
+    if (prompt) {
+      args.push("-i", prompt);
+    }
+    return args;
+  },
+
+  parseStreamLine(line: string): ParsedStreamEvent[] {
+    return parseAgyStreamLine(line);
+  },
+});
+
+/**
+ * `antigravity` 工厂函数的简短别名。
+ */
+export const agy = antigravity;
