@@ -28,7 +28,7 @@ AI Agent 在执行 `/mattpocock:teach` 技能时，必须遵循 [docs/agents/tea
 
 | 主题 (Topic) | 状态 | 当前课时 | 最新学习记录 (ZPD) | 下一步规划 | 路径 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`worktree-manager`** | 🟢 进行中 | 4 节课已完成 | `0004-sandbox-orchestration.md`<br>(已掌握 2×3 调度矩阵与双层 acquireUseRelease 编排) | 深入 `createSandbox.ts` 的 merge-to-head / ADR 0007 文件锁并发机制 | [worktree-manager/](./worktree-manager/) |
+| **`worktree-manager`** | ✅ 已完成 | 共 4 节课 (已结课) | `0004-sandbox-orchestration.md`<br>(已完全掌握 WorktreeManager 机制与 SandboxFactory 编排) | 已达成全部学习目标，后续可按需开启新主题（如 SandboxProvider 或 PromptEngine） | [worktree-manager/](./worktree-manager/) |
 
 ---
 
